@@ -27,7 +27,7 @@ from .convnext import test as _shared_test, backward_fn as _shared_backward
 
 
 class PatchEmbed(nn.Module):
-    def __init__(self, img_size=224, patch_size=16, in_chans=3, embed_dim=192):
+    def __init__(self, img_size=224, patch_size=224, in_chans=3, embed_dim=192):
         super().__init__()
         self.proj = nn.Conv2d(in_chans, embed_dim, kernel_size=patch_size, stride=patch_size)
 
@@ -178,11 +178,11 @@ class TransformerBlockMoE(nn.Module):
 
 
 class ViTMoE(nn.Module):
-    def __init__(self, *, img_size=224, patch_size=16, in_chans=3, num_classes=1000,
+    def __init__(self, *, img_size=224, patch_size=224, in_chans=3, num_classes=1000,
                  embed_dim=192, depth=8, num_heads=3, mlp_ratio=4.0,
                  moe_layer_indices: Optional[Union[List[int], str]] = None,
                  moe_params: Optional[dict] = None,
-                 use_class_token=True):
+                 use_class_token=False):
         super().__init__()
         self.patch_embed = PatchEmbed(img_size=img_size, patch_size=patch_size,
                                       in_chans=in_chans, embed_dim=embed_dim)
@@ -338,8 +338,8 @@ def train_moe(dataloader, model, loss_fn, optimizer, test_dataloader=None, test_
     return training_metrics, test_history, class_change_steps
 
 
-def create_moe_vit(num_classes=1000, device=None,
-                   img_size=224, patch_size=16,
+def create_moe_vit(num_classes=10, device=None,
+                   img_size=224, patch_size=224,
                    embed_dim=192, depth=8, num_heads=3, mlp_ratio=4.0,
                    moe_layer_indices: Optional[Union[List[int], str]] = 'every_other',
                    moe_num_experts: int = 4, moe_top_k: int = 1, moe_shared_expert: bool = False,
