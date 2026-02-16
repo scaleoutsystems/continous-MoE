@@ -3,6 +3,9 @@ datasets/
 models/
 results/
 
+# Private webhook integration
+hook.txt
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
