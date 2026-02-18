@@ -24,17 +24,27 @@ import torch.nn.functional as F
 
 # reuse test/backward from convnext for consistency
 from .convnext import test as _shared_test, backward_fn as _shared_backward
+from .replay import ReplayBuffer
 
 
 class PatchEmbed(nn.Module):
-    def __init__(self, img_size=224, patch_size=224, in_chans=3, embed_dim=192):
+    """Image-level embedder that produces a single token per image.
+
+    For the continual / MoE experiments we route on whole-image summaries so
+    tokenization into many patches is unnecessary. This module returns a
+    tensor shaped (B, 1, embed_dim).
+    """
+    def __init__(self, img_size=224, patch_size=16, in_chans=3, embed_dim=192):
         super().__init__()
-        self.proj = nn.Conv2d(in_chans, embed_dim, kernel_size=patch_size, stride=patch_size)
+        # simple 1x1 conv to map channels -> embed_dim, followed by global avg pool
+        self.proj = nn.Conv2d(in_chans, embed_dim, kernel_size=1)
 
     def forward(self, x):
-        # x: (B, C, H, W) -> (B, N, C)
-        x = self.proj(x)  # (B, embed, H/patch, W/patch)
-        x = x.flatten(2).transpose(1, 2)
+        # x: (B, C, H, W) -> (B, 1, C') where C' == embed_dim
+        B = x.shape[0]
+        x = self.proj(x)              # (B, embed_dim, H, W)
+        x = x.mean(dim=[2, 3], keepdim=False)  # global average pool -> (B, embed_dim)
+        x = x.unsqueeze(1)            # (B, 1, embed_dim)
         return x
 
 
@@ -59,11 +69,9 @@ class MLP(nn.Module):
 class MoE(nn.Module):
     """Sparse Mixture-of-Experts layer (sparse dispatch by default).
 
-    - Routing is done per-sample (whole-image summary) instead of per-patch.
-    - Only the selected experts are executed (sparse dispatch). This reduces
-      compute compared with running every expert for every token when top-k is small.
-    - Supports top-k selection per image, an optional always-included shared expert,
-      and exposes router parameter accessors.
+    - Routing is per-image (whole-image summary).
+    - Exposes gate probabilities for use by router-balancing regularizers.
+    - Tracks cumulative gate statistics for utilization metrics.
     """
     def __init__(self, dim, hidden_dim, num_experts=4, top_k=1, shared_expert=False, dropout=0.0):
         super().__init__()
@@ -84,12 +92,29 @@ class MoE(nn.Module):
         # gating (router) - routes based on a per-image summary vector
         self.gate = nn.Linear(dim, num_experts)
 
-        # statistics for debugging / optional auxiliary losses
+        # simple per-forward debug stats (kept detached)
         self.register_buffer('last_importance', torch.zeros(num_experts), persistent=False)
         self.register_buffer('last_load', torch.zeros(num_experts), persistent=False)
 
+        # cumulative stats used for utilization metrics (stored on CPU)
+        self.cumulative_gate_sum = torch.zeros(num_experts)
+        self.cumulative_samples = 0
+
+        # last differentiable gate probs (kept on device, not detached)
+        self._last_gate_probs = None
+
     def get_router_parameters(self):
         return self.gate.parameters()
+
+    def reset_cumulative_stats(self):
+        self.cumulative_gate_sum = torch.zeros(self.num_experts)
+        self.cumulative_samples = 0
+
+    def get_cumulative_stats(self):
+        if self.cumulative_samples == 0:
+            return {'fraction': torch.zeros(self.num_experts).tolist(), 'samples': 0}
+        frac = (self.cumulative_gate_sum / float(max(1, self.cumulative_samples))).tolist()
+        return {'fraction': frac, 'samples': int(self.cumulative_samples)}
 
     def forward(self, x):
         """Sparse dispatch based on a whole-image summary (mean over tokens).
@@ -105,6 +130,15 @@ class MoE(nn.Module):
         # decisions are made per-sample rather than per-token/patch.
         summary = x.mean(dim=1)  # (B, C)
         logits = self.gate(summary)  # (B, E)
+
+        # store differentiable gate probs (used by router-balancing loss)
+        gate_probs = F.softmax(logits, dim=-1)  # (B, E)
+        self._last_gate_probs = gate_probs
+
+        # accumulate CPU-side statistics for utilization reporting (keep stats on CPU)
+        # ensure both operands are on CPU to avoid device-mismatch during in-place add
+        self.cumulative_gate_sum = (self.cumulative_gate_sum.cpu() + gate_probs.detach().sum(dim=0).cpu())
+        self.cumulative_samples += B
 
         E = self.num_experts
         k = min(self.top_k, E)
@@ -186,10 +220,11 @@ class ViTMoE(nn.Module):
         super().__init__()
         self.patch_embed = PatchEmbed(img_size=img_size, patch_size=patch_size,
                                       in_chans=in_chans, embed_dim=embed_dim)
-        num_patches = (img_size // patch_size) * (img_size // patch_size)
-        self.use_class_token = use_class_token
-        self.cls_token = nn.Parameter(torch.zeros(1, 1, embed_dim)) if use_class_token else None
-        self.pos_embed = nn.Parameter(torch.zeros(1, num_patches + (1 if use_class_token else 0), embed_dim))
+        # single-token (full-image) embedding — no patch/tokenization
+        num_patches = 1
+        self.use_class_token = False
+        self.cls_token = None
+        self.pos_embed = nn.Parameter(torch.zeros(1, num_patches, embed_dim))
         self.pos_drop = nn.Dropout(p=0.0)
 
         # determine which layers are MoE
@@ -215,24 +250,17 @@ class ViTMoE(nn.Module):
 
         # init
         nn.init.trunc_normal_(self.pos_embed, std=0.02)
-        if self.cls_token is not None:
-            nn.init.trunc_normal_(self.cls_token, std=0.02)
 
     def forward(self, x):
         B = x.shape[0]
-        x = self.patch_embed(x)  # (B, N, C)
-        if self.use_class_token:
-            cls_tokens = self.cls_token.expand(B, -1, -1)
-            x = torch.cat((cls_tokens, x), dim=1)
+        x = self.patch_embed(x)  # (B, 1, C)
         x = x + self.pos_embed
         x = self.pos_drop(x)
         for blk in self.blocks:
             x = blk(x)
         x = self.norm(x)
-        if self.use_class_token:
-            cls = x[:, 0]
-        else:
-            cls = x.mean(dim=1)
+        # single-token representation (full-image)
+        cls = x[:, 0]
         out = self.head(cls)
         return out
 
@@ -246,14 +274,32 @@ class ViTMoE(nn.Module):
         for p in self.get_router_parameters():
             p.requires_grad = not freeze
 
+    def get_moe_utilization(self):
+        """Return a list of per-MoE-layer utilization statistics (fraction per expert).
+
+        Each element is a dict: {'layer_index': i, 'fraction': [...], 'samples': n}
+        """
+        results = []
+        for idx, m in enumerate(self.modules()):
+            if isinstance(m, MoE):
+                stats = m.get_cumulative_stats() if hasattr(m, 'get_cumulative_stats') else {}
+                results.append({'layer_index': idx, 'fraction': stats.get('fraction', []), 'samples': stats.get('samples', 0)})
+        return results
+
 
 # Training loop for ViT-MoE (adapted from the shared continual trainer)
 def train_moe(dataloader, model, loss_fn, optimizer, test_dataloader=None, test_fn=None,
-              test_interval='class', test_every_n=100, class_order=None, router_freeze_after_batches: Optional[int] = None):
-    """Continual-stream training loop with optional router-freezing support.
+              test_interval='class', test_every_n=100, class_order=None,
+              router_freeze_after_batches: Optional[int] = None,
+              router_balancing: bool = False, router_balance_strength: float = 0.1,
+              dataset_manager=None, replay_batch_size: int = 0, replay_weight: float = 1.0):
+    """Continual-stream training loop with optional router-freezing, router-balancing
+    and optional replay-buffer sampling.
 
-    Arguments follow the notebook's train(...) signature; router_freeze_after_batches
-    can be used to stop updating router parameters after N batches.
+    This trainer now detects a shuffled DataLoader and will skip class-boundary
+    testing/prints while still accumulating per-class metrics. When
+    `test_interval=='class'` with shuffled training we run a single final
+    evaluation so callers still get a populated `test_history`.
     """
     model.train()
     device = next(model.parameters()).device
@@ -265,6 +311,20 @@ def train_moe(dataloader, model, loss_fn, optimizer, test_dataloader=None, test_
     test_history = []
     class_change_steps = []
 
+    # Detect shuffled DataLoader (RandomSampler / SubsetRandomSampler)
+    is_shuffled = False
+    try:
+        sampler = getattr(dataloader, 'sampler', None)
+        if sampler is not None:
+            sname = sampler.__class__.__name__
+            if sname in ('RandomSampler', 'SubsetRandomSampler'):
+                is_shuffled = True
+    except Exception:
+        is_shuffled = False
+
+    if is_shuffled:
+        print('Shuffled dataloader detected — treating training as standard shuffled training (no per-class boundaries)')
+
     for batch, (X, y) in enumerate(dataloader):
         X, y = X.to(device), y.to(device)
         y_class = int(y[0].item())
@@ -274,35 +334,77 @@ def train_moe(dataloader, model, loss_fn, optimizer, test_dataloader=None, test_
             if hasattr(model, 'freeze_routing'):
                 model.freeze_routing(True)
 
-        if current_class != y_class:
-            if current_class is not None:
-                avg_loss = class_losses[current_class] / class_batch_counts[current_class]
-                training_metrics[current_class] = {
-                    'samples': class_batch_counts[current_class],
-                    'avg_loss': avg_loss
-                }
-                print(f"  Class {current_class} - Processed {class_batch_counts[current_class]} samples, Avg loss: {avg_loss:>7f}")
+        # Only perform class-boundary logic for class-ordered streams
+        if not is_shuffled:
+            if current_class != y_class:
+                if current_class is not None:
+                    avg_loss = class_losses[current_class] / class_batch_counts[current_class]
+                    training_metrics[current_class] = {
+                        'samples': class_batch_counts[current_class],
+                        'avg_loss': avg_loss
+                    }
+                    print(f"  Class {current_class} - Processed {class_batch_counts[current_class]} samples, Avg loss: {avg_loss:>7f}")
 
-                if test_interval == 'class' and test_dataloader is not None and test_fn is not None:
-                    print(f"  Testing after Class {current_class}:")
-                    test_result = test_fn(test_dataloader, model, loss_fn, class_order=class_order)
-                    test_result['step'] = current_class
-                    test_result['step_type'] = 'class'
-                    test_history.append(test_result)
-                    model.train()
+                    if test_interval == 'class' and test_dataloader is not None and test_fn is not None:
+                        print(f"  Testing after Class {current_class}:")
+                        # reset MoE cumulative stats before testing so metrics reflect test run
+                        try:
+                            for m in model.modules():
+                                if hasattr(m, 'reset_cumulative_stats'):
+                                    m.reset_cumulative_stats()
+                        except Exception:
+                            pass
+                        test_result = test_fn(test_dataloader, model, loss_fn, class_order=class_order)
+                        test_result['step'] = current_class
+                        test_result['step_type'] = 'class'
+                        test_history.append(test_result)
+                        model.train()
 
-            current_class = y_class
-            print(f"Starting training on Class {current_class}")
-            class_change_steps.append(batch)
+                current_class = y_class
+                print(f"Starting training on Class {current_class}")
+                class_change_steps.append(batch)
+        else:
+            # shuffled: aggregate stats only
+            pass
 
+        # forward
         pred = model(X)
         loss = loss_fn(pred, y)
+
+        # optional router-balancing auxiliary loss (differentiable via gate probs)
+        if router_balancing:
+            bal_loss = 0.0
+            for m in model.modules():
+                if isinstance(m, MoE) and getattr(m, '_last_gate_probs', None) is not None:
+                    p_mean = m._last_gate_probs.mean(dim=0)  # (E,)
+                    target = torch.full_like(p_mean, 1.0 / float(max(1, m.num_experts)))
+                    bal_loss = bal_loss + ((p_mean - target) ** 2).mean()
+            if isinstance(bal_loss, torch.Tensor):
+                loss = loss + router_balance_strength * bal_loss
+
+        # optional replay sampling
+        if hasattr(model, 'replay_buffer') and replay_batch_size > 0 and model.replay_buffer.size() > 0:
+            Xr_cpu, yr_cpu = model.replay_buffer.sample(replay_batch_size)
+            if Xr_cpu.numel() > 0:
+                Xr = Xr_cpu.to(device)
+                yr = yr_cpu.to(device).long()
+                pred_r = model(Xr)
+                loss_r = loss_fn(pred_r, yr)
+                loss = loss + replay_weight * loss_r
 
         # Backprop
         loss.backward()
         optimizer.step()
         optimizer.zero_grad()
 
+        # optionally let the dataset manager add samples to replay buffer
+        if dataset_manager is not None and hasattr(dataset_manager, 'add_to_replay_if_present'):
+            try:
+                dataset_manager.add_to_replay_if_present(model, X.detach().cpu(), y.detach().cpu(), losses=None)
+            except Exception:
+                pass
+
+        # accumulate per-class stats (works for both continual and shuffled streams)
         class_batch_counts[current_class] = class_batch_counts.get(current_class, 0) + 1
         class_losses[current_class] = class_losses.get(current_class, 0.0) + loss.item()
         batch_count += 1
@@ -311,28 +413,58 @@ def train_moe(dataloader, model, loss_fn, optimizer, test_dataloader=None, test_
             print(f"  Batch {batch}: loss: {loss.item():>7f}")
             if test_interval == 'batch' and batch % test_every_n == 0 and test_dataloader is not None and test_fn is not None:
                 print(f"  Testing at Batch {batch}:")
+                try:
+                    for m in model.modules():
+                        if hasattr(m, 'reset_cumulative_stats'):
+                            m.reset_cumulative_stats()
+                except Exception:
+                    pass
                 test_result = test_fn(test_dataloader, model, loss_fn, class_order=class_order)
                 test_result['step'] = batch
                 test_result['step_type'] = 'batch'
-                test_result['current_class'] = current_class
                 test_history.append(test_result)
                 model.train()
 
-    if current_class is not None:
-        avg_loss = class_losses[current_class] / class_batch_counts[current_class]
-        training_metrics[current_class] = {
-            'samples': class_batch_counts[current_class],
-            'avg_loss': avg_loss
-        }
-        print(f"  Class {current_class} - Processed {class_batch_counts[current_class]} samples, Avg loss: {avg_loss:>7f}")
+    # Finalize metrics for all seen classes
+    for cls in sorted(class_batch_counts.keys()):
+        cnt = class_batch_counts[cls]
+        avg = class_losses[cls] / cnt if cnt > 0 else float('nan')
+        training_metrics[cls] = {'samples': cnt, 'avg_loss': avg}
 
+    # If shuffled training was used and the user requested class-interval testing,
+    # provide a single final evaluation (intermediate per-class tests are skipped).
+    if is_shuffled:
         if test_interval == 'class' and test_dataloader is not None and test_fn is not None:
-            print(f"  Testing after Class {current_class}:")
+            print('Shuffled training detected — running final evaluation (intermediate per-class tests skipped).')
+            try:
+                for m in model.modules():
+                    if hasattr(m, 'reset_cumulative_stats'):
+                        m.reset_cumulative_stats()
+            except Exception:
+                pass
             test_result = test_fn(test_dataloader, model, loss_fn, class_order=class_order)
-            test_result['step'] = current_class
-            test_result['step_type'] = 'class'
+            test_result['step'] = batch_count
+            test_result['step_type'] = 'shuffled'
             test_history.append(test_result)
-            model.train()
+    else:
+        # preserve original behavior for class-ordered streams
+        if current_class is not None:
+            avg_loss = class_losses[current_class] / class_batch_counts[current_class]
+            print(f"  Class {current_class} - Processed {class_batch_counts[current_class]} samples, Avg loss: {avg_loss:>7f}")
+
+            if test_interval == 'class' and test_dataloader is not None and test_fn is not None:
+                print(f"  Testing after Class {current_class}:")
+                try:
+                    for m in model.modules():
+                        if hasattr(m, 'reset_cumulative_stats'):
+                            m.reset_cumulative_stats()
+                except Exception:
+                    pass
+                test_result = test_fn(test_dataloader, model, loss_fn, class_order=class_order)
+                test_result['step'] = current_class
+                test_result['step_type'] = 'class'
+                test_history.append(test_result)
+                model.train()
 
     print(f"Training complete. Total batches: {batch_count}\n")
     return training_metrics, test_history, class_change_steps
@@ -343,7 +475,9 @@ def create_moe_vit(num_classes=10, device=None,
                    embed_dim=192, depth=8, num_heads=3, mlp_ratio=4.0,
                    moe_layer_indices: Optional[Union[List[int], str]] = 'every_other',
                    moe_num_experts: int = 4, moe_top_k: int = 1, moe_shared_expert: bool = False,
-                   lr: float = 1e-3, pretrained: bool = False):
+                   lr: float = 1e-3, pretrained: bool = False,
+                   router_balancing: bool = False, router_balance_strength: float = 0.1,
+                   replay_capacity: int = 0, replay_policy: str = 'fifo'):
     """Factory that builds a ViT with configurable MoE layers.
 
     Returns the standard model package dict used in the notebook.
@@ -361,6 +495,13 @@ def create_moe_vit(num_classes=10, device=None,
     if device is not None:
         model.to(device)
 
+    # optionally attach a replay buffer to the model for online replay
+    if replay_capacity and replay_capacity > 0:
+        try:
+            model.replay_buffer = ReplayBuffer(int(replay_capacity), policy=replay_policy)
+        except Exception:
+            model.replay_buffer = None
+
     loss = nn.CrossEntropyLoss()
     optimizer = torch.optim.SGD(model.parameters(), lr=lr)
 
@@ -374,7 +515,11 @@ def create_moe_vit(num_classes=10, device=None,
         'moe_top_k': moe_top_k,
         'moe_shared_expert': moe_shared_expert,
         'lr': lr,
-        'pretrained': pretrained
+        'pretrained': pretrained,
+        'router_balancing': router_balancing,
+        'router_balance_strength': router_balance_strength,
+        'replay_capacity': replay_capacity,
+        'replay_policy': replay_policy
     }
 
     return {

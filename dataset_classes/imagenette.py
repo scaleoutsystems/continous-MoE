@@ -6,7 +6,9 @@ from .continual_base import ContinualDataset
 
 
 class ImagenetteContinual(ContinualDataset):
-    def __init__(self, root, desired_size=(224, 224), download=False, batch_size=1, num_workers=0):
+    def __init__(self, root, desired_size=(224, 224), download=False, batch_size=1, num_workers=0,
+                 pretrain_samples_per_class: int = 0, pretrain_reuse: bool = False,
+                 shuffle_within_class: bool = False, seed: int = None):
         resize_transform = transforms.Compose([
             transforms.Resize(desired_size),
             transforms.ToTensor()
@@ -15,7 +17,11 @@ class ImagenetteContinual(ContinualDataset):
         dataset_train = torchvision.datasets.Imagenette(root=root, split='train', download=download, transform=resize_transform)
         dataset_test = torchvision.datasets.Imagenette(root=root, split='val', download=download, transform=resize_transform)
 
-        super().__init__('imagenette', dataset_train, dataset_test, batch_size=batch_size, num_workers=num_workers)
+        super().__init__('imagenette', dataset_train, dataset_test, batch_size=batch_size, num_workers=num_workers,
+                         pretrain_samples_per_class=pretrain_samples_per_class,
+                         pretrain_reuse=pretrain_reuse,
+                         shuffle_within_class=shuffle_within_class,
+                         seed=seed)
 
 
 def get_imagenette(root, **kwargs):

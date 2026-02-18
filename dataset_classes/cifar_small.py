@@ -22,7 +22,9 @@ class CIFAR10SmallContinual(ContinualDataset):
                  batch_size=1, num_workers=0,
                  samples_per_class_train: int = 5,
                  samples_per_class_test: int = 5,
-                 seed: int = 0):
+                 seed: int = 0,
+                 pretrain_samples_per_class: int = 0, pretrain_reuse: bool = False,
+                 shuffle_within_class: bool = False):
         """Create very small per-class subsets of CIFAR-10 for fast tests.
 
         Args:
@@ -73,7 +75,9 @@ class CIFAR10SmallContinual(ContinualDataset):
         train_subset = Subset(full_train, selected_train)
         test_subset = Subset(full_test, selected_test)
 
-        super().__init__('cifar10_small', train_subset, test_subset, batch_size=batch_size, num_workers=num_workers)
+        super().__init__('cifar10_small', train_subset, test_subset, batch_size=batch_size, num_workers=num_workers,
+                         pretrain_samples_per_class=pretrain_samples_per_class, pretrain_reuse=pretrain_reuse,
+                         shuffle_within_class=shuffle_within_class, seed=seed)
 
 
 def get_cifar10_small(root, **kwargs):

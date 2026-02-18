@@ -9,7 +9,9 @@ from .continual_base import ContinualDataset
 
 
 class CIFAR10Continual(ContinualDataset):
-    def __init__(self, root, desired_size=(224, 224), download=False, batch_size=1, num_workers=0):
+    def __init__(self, root, desired_size=(224, 224), download=False, batch_size=1, num_workers=0,
+                 pretrain_samples_per_class: int = 0, pretrain_reuse: bool = False,
+                 shuffle_within_class: bool = False, seed: int = None):
         # Resize CIFAR images to the desired input size (ConvNeXt expects larger images)
         resize_transform = transforms.Compose([
             transforms.Resize(desired_size),
@@ -20,7 +22,11 @@ class CIFAR10Continual(ContinualDataset):
         dataset_test = torchvision.datasets.CIFAR10(root=root, train=False, download=download, transform=resize_transform)
 
         # Name the dataset 'cifar10' so metadata is clear
-        super().__init__('cifar10', dataset_train, dataset_test, batch_size=batch_size, num_workers=num_workers)
+        super().__init__('cifar10', dataset_train, dataset_test, batch_size=batch_size, num_workers=num_workers,
+                         pretrain_samples_per_class=pretrain_samples_per_class,
+                         pretrain_reuse=pretrain_reuse,
+                         shuffle_within_class=shuffle_within_class,
+                         seed=seed)
 
 
 def get_cifar10(root, **kwargs):

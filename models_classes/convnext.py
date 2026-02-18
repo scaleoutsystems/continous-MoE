@@ -16,9 +16,17 @@ import torchvision
 
 
 def train(dataloader, model, loss_fn, optimizer, test_dataloader=None, test_fn=None,
-          test_interval='class', test_every_n=100, class_order=None):
+          test_interval='class', test_every_n=100, class_order=None,
+          router_freeze_after_batches: int = None,
+          router_balancing: bool = False, router_balance_strength: float = 0.1,
+          dataset_manager=None, replay_batch_size: int = 0, replay_weight: float = 1.0):
     """Continual-stream training loop compatible with the notebook.
-    Signature matches the original notebook's `train` so it can be used interchangeably.
+
+    This trainer now auto-detects a *shuffled* DataLoader (standard training)
+    and will skip class-boundary logic in that case while still tracking
+    per-class statistics. When training is shuffled, intermediate "per-class"
+    tests are skipped (a single final evaluation is run if the user requested
+    `test_interval=='class'`).
     """
     device = next(model.parameters()).device
     model.train()
@@ -30,41 +38,101 @@ def train(dataloader, model, loss_fn, optimizer, test_dataloader=None, test_fn=N
     test_history = []
     class_change_steps = []
 
+    # Detect whether the provided dataloader is a shuffled sampler (standard
+    # DataLoader with shuffle=True uses RandomSampler / SubsetRandomSampler).
+    is_shuffled = False
+    try:
+        sampler = getattr(dataloader, 'sampler', None)
+        if sampler is not None:
+            sname = sampler.__class__.__name__
+            if sname in ('RandomSampler', 'SubsetRandomSampler'):
+                is_shuffled = True
+    except Exception:
+        is_shuffled = False
+
+    if is_shuffled:
+        print('Shuffled dataloader detected — treating training as standard shuffled training (no per-class boundaries)')
+
     for batch, (X, y) in enumerate(dataloader):
         X, y = X.to(device), y.to(device)
         y_class = int(y[0].item())
 
-        if current_class != y_class:
-            if current_class is not None:
-                avg_loss = class_losses[current_class] / class_batch_counts[current_class]
-                training_metrics[current_class] = {
-                    'samples': class_batch_counts[current_class],
-                    'avg_loss': avg_loss
-                }
-                print(f"  Class {current_class} - Processed {class_batch_counts[current_class]} samples, Avg loss: {avg_loss:>7f}")
+        # freeze router when requested (no-op if model doesn't support it)
+        if router_freeze_after_batches is not None and batch_count == router_freeze_after_batches:
+            if hasattr(model, 'freeze_routing'):
+                try:
+                    model.freeze_routing(True)
+                except Exception:
+                    pass
 
-                if test_interval == 'class' and test_dataloader is not None and test_fn is not None:
-                    print(f"  Testing after Class {current_class}:")
-                    test_result = test_fn(test_dataloader, model, loss_fn, class_order=class_order)
-                    test_result['step'] = current_class
-                    test_result['step_type'] = 'class'
-                    test_history.append(test_result)
-                    model.train()
+        # Only treat class-boundary events for *continual* (class-ordered) streams
+        if not is_shuffled:
+            if current_class != y_class:
+                if current_class is not None:
+                    avg_loss = class_losses[current_class] / class_batch_counts[current_class]
+                    training_metrics[current_class] = {
+                        'samples': class_batch_counts[current_class],
+                        'avg_loss': avg_loss
+                    }
+                    print(f"  Class {current_class} - Processed {class_batch_counts[current_class]} samples, Avg loss: {avg_loss:>7f}")
 
-            current_class = y_class
-            print(f"Starting training on Class {current_class}")
-            class_change_steps.append(batch)
+                    if test_interval == 'class' and test_dataloader is not None and test_fn is not None:
+                        print(f"  Testing after Class {current_class}:")
+                        test_result = test_fn(test_dataloader, model, loss_fn, class_order=class_order)
+                        test_result['step'] = current_class
+                        test_result['step_type'] = 'class'
+                        test_history.append(test_result)
+                        model.train()
+
+                current_class = y_class
+                print(f"Starting training on Class {current_class}")
+                class_change_steps.append(batch)
+        else:
+            # shuffled training: do not emit class-boundary events; just aggregate
+            # per-class statistics as samples arrive
+            pass
 
         pred = model(X)
         loss = loss_fn(pred, y)
+
+        # optional router-balancing auxiliary loss (only affects models with MoE-like gates)
+        if router_balancing:
+            bal_loss = 0.0
+            for m in model.modules():
+                gp = getattr(m, '_last_gate_probs', None)
+                ne = getattr(m, 'num_experts', None)
+                if gp is not None and ne is not None:
+                    p_mean = gp.mean(dim=0)  # (E,)
+                    target = torch.full_like(p_mean, 1.0 / float(max(1, ne)))
+                    bal_loss = bal_loss + ((p_mean - target) ** 2).mean()
+            if isinstance(bal_loss, torch.Tensor):
+                loss = loss + router_balance_strength * bal_loss
+
+        # optional replay sampling
+        if hasattr(model, 'replay_buffer') and replay_batch_size > 0 and model.replay_buffer.size() > 0:
+            Xr_cpu, yr_cpu = model.replay_buffer.sample(replay_batch_size)
+            if Xr_cpu.numel() > 0:
+                Xr = Xr_cpu.to(device)
+                yr = yr_cpu.to(device).long()
+                pred_r = model(Xr)
+                loss_r = loss_fn(pred_r, yr)
+                loss = loss + replay_weight * loss_r
 
         # Backprop
         loss.backward()
         optimizer.step()
         optimizer.zero_grad()
 
-        class_batch_counts[current_class] += 1
-        class_losses[current_class] += loss.item()
+        # optionally let the dataset manager add samples to replay buffer
+        if dataset_manager is not None and hasattr(dataset_manager, 'add_to_replay_if_present'):
+            try:
+                dataset_manager.add_to_replay_if_present(model, X.detach().cpu(), y.detach().cpu(), losses=None)
+            except Exception:
+                pass
+
+        # accumulate per-class stats (works for both continual and shuffled streams)
+        class_batch_counts[y_class] += 1
+        class_losses[y_class] += loss.item()
         batch_count += 1
 
         if batch % 100 == 0 and batch > 0:
@@ -74,25 +142,38 @@ def train(dataloader, model, loss_fn, optimizer, test_dataloader=None, test_fn=N
                 test_result = test_fn(test_dataloader, model, loss_fn, class_order=class_order)
                 test_result['step'] = batch
                 test_result['step_type'] = 'batch'
-                test_result['current_class'] = current_class
                 test_history.append(test_result)
                 model.train()
 
-    if current_class is not None:
-        avg_loss = class_losses[current_class] / class_batch_counts[current_class]
-        training_metrics[current_class] = {
-            'samples': class_batch_counts[current_class],
-            'avg_loss': avg_loss
-        }
-        print(f"  Class {current_class} - Processed {class_batch_counts[current_class]} samples, Avg loss: {avg_loss:>7f}")
+    # Finalize per-class training metrics for all seen classes
+    for cls in sorted(class_batch_counts.keys()):
+        cnt = class_batch_counts[cls]
+        avg = class_losses[cls] / cnt if cnt > 0 else float('nan')
+        training_metrics[cls] = {'samples': cnt, 'avg_loss': avg}
 
+    # If this was a continual (class-ordered) stream, retain the original
+    # behaviour of reporting/ testing after the last class. For shuffled
+    # training we skip intermediate per-class testing — but if the user set
+    # TEST_INTERVAL=='class' we run a single final evaluation so test_history
+    # remains populated.
+    if not is_shuffled:
+        if current_class is not None:
+            print(f"  Class {current_class} - Processed {class_batch_counts[current_class]} samples, Avg loss: {training_metrics[current_class]['avg_loss']:>7f}")
+
+            if test_interval == 'class' and test_dataloader is not None and test_fn is not None:
+                print(f"  Testing after Class {current_class}:")
+                test_result = test_fn(test_dataloader, model, loss_fn, class_order=class_order)
+                test_result['step'] = current_class
+                test_result['step_type'] = 'class'
+                test_history.append(test_result)
+                model.train()
+    else:
         if test_interval == 'class' and test_dataloader is not None and test_fn is not None:
-            print(f"  Testing after Class {current_class}:")
+            print('Shuffled training detected — running final evaluation (intermediate per-class tests skipped).')
             test_result = test_fn(test_dataloader, model, loss_fn, class_order=class_order)
-            test_result['step'] = current_class
-            test_result['step_type'] = 'class'
+            test_result['step'] = batch_count
+            test_result['step_type'] = 'shuffled'
             test_history.append(test_result)
-            model.train()
 
     print(f"Training complete. Total batches: {batch_count}\n")
     return training_metrics, test_history, class_change_steps
