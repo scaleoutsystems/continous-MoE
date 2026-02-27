@@ -53,4 +53,4 @@ your config.
 
 ## License
 
-[Your license text here]
+Apache v2.0 License, please see `LICENSE`
