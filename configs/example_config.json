@@ -2,7 +2,7 @@
   // --------------------------------------------------------------------
   // Seeds (optional): global defaults and per-stage overrides
   "seeds": {
-    "global": 123,
+    "global": 123
     // "dataset": 123,
     // "partition": 123,
     // "model": 123,

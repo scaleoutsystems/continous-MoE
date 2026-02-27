@@ -5,7 +5,7 @@ import json
 
 
 class DIL_Logger:
-    def __init__(self, N, C, baseline=None, save_dir="logs", config_file=None):
+    def __init__(self, N, C, baseline=None, save_dir="results", config_file=None):
         self.N = N
         self.C = C
         self.baseline = baseline
