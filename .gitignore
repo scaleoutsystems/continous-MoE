@@ -2,6 +2,7 @@
 datasets/
 models/
 results/
+logs/
 
 # Private webhook integration
 hook.txt
