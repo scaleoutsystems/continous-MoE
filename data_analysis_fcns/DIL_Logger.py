@@ -1,12 +1,11 @@
 import torch
 import numpy as np
-import matplotlib.pyplot as plt
 from pathlib import Path
 import json
 
 
 class DIL_Logger:
-    def __init__(self, N, C, baseline=None, save_dir="logs"):
+    def __init__(self, N, C, baseline=None, save_dir="logs", config_file=None):
         self.N = N
         self.C = C
         self.baseline = baseline
@@ -19,6 +18,8 @@ class DIL_Logger:
 
         self.save_dir = Path(save_dir)
         self.save_dir.mkdir(exist_ok=True)
+
+        self.config_file = config_file
 
     @torch.no_grad()
     def evaluate(self, model, loaders, device):
@@ -137,8 +138,17 @@ class DIL_Logger:
         self.history.append(metrics)
 
     def save(self):
+        # include metadata such as configuration path and timestamp if available
+        meta = {"save_time": np.datetime64("now").astype(str)}
+        if hasattr(self, "config_file") and self.config_file is not None:
+            meta["config_file"] = self.config_file
+        out = {
+            "metadata": meta,
+            "history": self.history
+        }
+        # if history already had config info it can override; caller may add it before save
         with open(self.save_dir / "metrics.json", "w") as f:
-            json.dump(self.history, f, indent=2)
+            json.dump(out, f, indent=2)
 
         np.save(self.save_dir / "R_final.npy",
                 np.array(self.R_final))

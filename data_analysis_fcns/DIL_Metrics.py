@@ -6,7 +6,9 @@ def plot_results(log_dir="logs"):
     log_dir = Path(log_dir)
 
     with open(log_dir / "metrics.json") as f:
-        hist = json.load(f)
+        data = json.load(f)
+    # support both old-format (list) and new format (dict with metadata)
+    hist = data.get("history", data)
 
     epochs = range(len(hist))
 
@@ -30,11 +32,12 @@ def plot_results(log_dir="logs"):
              label="Avg Incremental Acc")
 
     for d in range(max(h["domain"] for h in hist) + 1):
-        domain_curve = [
-            h["domain_acc_vector"][d]
-            if d < len(h["domain_acc_vector"]) else None
-            for h in hist
-        ]
+        domain_curve = []
+        for h in hist:
+            if d < len(h["domain_acc_vector"]):
+                domain_curve.append(h["domain_acc_vector"][d])
+            else:
+                domain_curve.append(float('nan'))
         plt.plot(epochs, domain_curve,
                  linestyle="--", alpha=0.5,
                  label=f"Domain {d}")

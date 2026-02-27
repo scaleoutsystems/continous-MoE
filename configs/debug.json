@@ -1,0 +1,106 @@
+{
+  // --------------------------------------------------------------------
+  // Seeds (optional): global defaults and per-stage overrides
+  "seeds": {
+    "global": 42
+    // "dataset": 123,
+    // "partition": 123,
+    // "model": 123,
+    // "training": 123,
+    // "pretrain": 123,
+    // "replay": 123
+  },
+
+  // --------------------------------------------------------------------
+  // Dataset specification
+  "dataset": "cifar10",
+  "dataset_root": "./datasets",
+  "mini_dataset": 1000,                // integer sample count or null for full
+
+  // --------------------------------------------------------------------
+  // Partitioning (pick one of these blocks)
+  "num_partitions": 5,
+  "partition": {
+    // Dirichlet-split example:
+    // "type": "dirichlet",
+    // "alpha": 0.5,
+    // "min_size": 10,
+    // "balanced": false
+
+    // Static / contiguous split example:
+    // "type": "static"
+
+    "type": "dirichlet",
+    "alpha": 0.3,
+    "min_size": 10,
+    "balanced": false
+  },
+
+  "train_frac": 0.8,
+  "batch_size": 128,
+  "shuffle": true,
+
+  // --------------------------------------------------------------------
+  // Pretraining / replay options
+  "pretrain": {
+    "enabled": false,
+    "num_samples": 0,
+    "with_replacement": false
+  },
+
+  "replay": {
+    "enabled": false,
+    "capacity": 1000,
+    "policy": "fifo"        // or "random"
+  },
+
+  // --------------------------------------------------------------------
+  // Model configuration
+  "model": {
+    "name": "resnet18",
+    "num_classes": 10,
+    "pretrained": false
+    // If using vit_moe, you may specify additional keys:
+    // "moe_layer_indices": "every_other",
+    // "moe_num_experts": 4,
+    // "moe_top_k": 1,
+    // "moe_shared_expert": false
+  },
+
+  // --------------------------------------------------------------------
+  // Loss and learning rate
+  "loss": {
+    "name": "cross_entropy",
+    "lr": 0.001
+  },
+
+  // --------------------------------------------------------------------
+  // Optimizer (lr moved above)
+  "optimizer": {
+    "name": "adam"          // or "sgd"
+    // "momentum": 0.9        // only for SGD
+  },
+
+  // --------------------------------------------------------------------
+  // Scheduler
+  "scheduler": {
+    "name": "cosine",
+    "T_max": 5
+  },
+
+  "epochs_per_domain": 3,
+
+  // --------------------------------------------------------------------
+  // Continual learning options
+  "router_balancing": false,
+  "router_balance_strength": 0.1,
+  "router_freeze_after_batches": null,
+
+  // --------------------------------------------------------------------
+  // Baseline reference (enable to compute FWT/intransigence)
+  "baseline": {
+    "enabled": false,
+    "train": false,
+    "accuracies": null
+  }
+}

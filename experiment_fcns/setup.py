@@ -1,0 +1,115 @@
+import json
+import torch
+import random
+import numpy as np
+from typing import Dict, Any
+
+from dataset_fcns.dataset_utils import create_dataloaders
+from models_fcns.model_utils import create_model
+
+
+def _set_seed(seed: int):
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+    random.seed(seed)
+
+
+def load_config(path: str) -> Dict[str, Any]:
+    """Read a JSON experiment configuration and instantiate components.
+
+    The returned dictionary contains the raw config under key "cfg" plus
+    objects created from the configuration, e.g. dataset, loaders, model,
+    optimizer, scheduler, etc.
+    """
+    # load JSON but allow C-style comments (// and /* */)
+    with open(path) as f:
+        raw = f.read()
+    # remove line comments
+    import re
+    raw = re.sub(r"//.*", "", raw)
+    # remove block comments
+    raw = re.sub(r"/\*.*?\*/", "", raw, flags=re.DOTALL)
+    cfg = json.loads(raw)
+
+    print(f"Loading experiment configuration from {path}")
+    # show a compact summary of the most important fields
+    print(f" dataset         : {cfg.get('dataset')} @ {cfg.get('dataset_root','./datasets')}")
+    print(f" partitions      : {cfg.get('num_partitions')}  type={cfg.get('partition',{}).get('type')} ")
+    print(f" model           : {cfg.get('model',{}).get('name')}")
+    print(f" epochs_per_dom  : {cfg.get('epochs_per_domain')}")
+    # full config dump for reference
+    print(json.dumps(cfg, indent=2))
+
+    # seed handling: allow multiple independent seeds
+    seeds = cfg.get("seeds", {})
+    global_seed = seeds.get("global", cfg.get("seed", 0))
+    dataset_seed = seeds.get("dataset", global_seed)
+    model_seed = seeds.get("model", global_seed)
+    training_seed = seeds.get("training", global_seed)
+    pretrain_seed = seeds.get("pretrain", global_seed)
+    replay_seed = seeds.get("replay", global_seed)
+    _set_seed(global_seed)
+
+    # show seed summary
+    print(f" seeds: global={global_seed}, dataset={dataset_seed}, model={model_seed}, training={training_seed}")
+
+    # create dataset and dataloaders first; pass seeds dict so loader can
+    # use the partition-specific seed if provided
+    data_objs = create_dataloaders(cfg)
+    dataset = data_objs["dataset"]
+    train_loaders = data_objs["train_loaders"]
+    test_loaders = data_objs["test_loaders"]
+    pretrain_loader = data_objs.get("pretrain_loader", None)
+
+    # build model
+    torch.manual_seed(model_seed)
+    model = create_model(cfg)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = model.to(device)
+
+    # optimizer
+    opt_cfg = cfg.get("optimizer", {"name": "adam"})
+    loss_cfg = cfg.get("loss", {})
+    lr = loss_cfg.get("lr", 1e-3)
+    if opt_cfg["name"].lower() == "adam":
+        optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+    elif opt_cfg["name"].lower() == "sgd":
+        optimizer = torch.optim.SGD(model.parameters(), lr=lr,
+                                    momentum=opt_cfg.get("momentum", 0.0))
+    else:
+        raise ValueError(f"Unsupported optimizer {opt_cfg['name']}")
+
+    # scheduler
+    sch_cfg = cfg.get("scheduler", {})
+    scheduler = None
+    if sch_cfg:
+        if sch_cfg.get("name") == "cosine":
+            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+                optimizer, T_max=sch_cfg.get("T_max", 10)
+            )
+        elif sch_cfg.get("name") == "none":
+            scheduler = None
+        else:
+            print(f"Warning: unknown scheduler {sch_cfg.get('name')} -- skipping")
+
+    # loss
+    loss_cfg = cfg.get("loss", {"name": "cross_entropy"})
+    if loss_cfg["name"] == "cross_entropy":
+        criterion = torch.nn.CrossEntropyLoss()
+    else:
+        raise ValueError(f"Unsupported loss {loss_cfg['name']}")
+
+    return {
+        "cfg": cfg,
+        "dataset": dataset,
+        "train_loaders": train_loaders,
+        "test_loaders": test_loaders,
+        "pretrain_loader": pretrain_loader,
+        "train_frac": data_objs.get("train_frac"),
+        "batch_size": data_objs.get("batch_size"),
+        "model": model,
+        "optimizer": optimizer,
+        "scheduler": scheduler,
+        "criterion": criterion,
+        "device": device,
+    }
