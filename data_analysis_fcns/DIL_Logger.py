@@ -49,9 +49,9 @@ class DIL_Logger:
                 all_preds.append(preds.cpu())
                 all_targets.append(y.cpu())
 
-            domain_acc.append(100 * correct / total)
+            domain_acc.append(correct / total)
 
-        overall_acc = 100 * total_correct / total_samples
+        overall_acc = total_correct / total_samples
 
         return (
             np.array(domain_acc),
@@ -80,7 +80,7 @@ class DIL_Logger:
         diag = np.diag(R_temp)
         plasticity = diag.mean()
 
-        # Forgetting & BWT (FM & BWT)
+        # Forgetting & Backward transfer (FM & BWT)
         if i > 0:
             forgetting = np.mean(
                 self.best_past[:i] - domain_acc[:i]
@@ -94,7 +94,7 @@ class DIL_Logger:
             forgetting = 0.0
             bwt = 0.0
 
-        # FWT
+        # Forward Transfer (FWT): mean of off-diagonal
         fwt = None
         if self.baseline is not None and i > 0:
             fwt = np.mean([

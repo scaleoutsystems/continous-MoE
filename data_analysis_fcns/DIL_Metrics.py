@@ -1,4 +1,4 @@
-def plot_results(log_dir="logs"):
+def plot_results(log_dir="results"):
     import json
     import matplotlib.pyplot as plt
     from pathlib import Path
