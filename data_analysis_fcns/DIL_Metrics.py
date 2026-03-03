@@ -10,7 +10,7 @@ def plot_results(log_dir):
     data = None
     if log_dir.is_file() and log_dir.suffix == ".pt":
         # direct file path passed
-        data = torch.load(log_dir)
+        data = torch.load(log_dir, weights_only=False)
     else:
         raise FileNotFoundError(
             f"Please pass the path to a .pt file, not {log_dir}"

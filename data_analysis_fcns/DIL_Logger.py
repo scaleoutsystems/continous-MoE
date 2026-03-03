@@ -3,7 +3,7 @@ import numpy as np
 from pathlib import Path
 import json
 from datetime import datetime
-
+import re
 
 class DIL_Logger:
     def __init__(self, N, C, baseline=None, save_dir="results", config_file=None):
@@ -169,8 +169,15 @@ class DIL_Logger:
         if hasattr(self, "config_file") and self.config_file is not None:
             meta["config_file"] = self.config_file
             try:
+                # Load but remove comment lines (JSON + comments)
                 with open(self.config_file) as f:
-                    cfg = json.load(f)
+                    raw = f.read()
+                # remove line comments
+                raw = re.sub(r"//.*", "", raw)
+                # remove block comments
+                raw = re.sub(r"/\*.*?\*/", "", raw, flags=re.DOTALL)
+                cfg = json.loads(raw)
+                
                 model_name = cfg.get("model", {}).get("name", model_name)
                 dataset_name = cfg.get("dataset", dataset_name)
             except Exception:

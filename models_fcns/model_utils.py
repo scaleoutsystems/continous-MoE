@@ -30,7 +30,7 @@ def create_model(config: Dict):
         fn = getattr(torchvision.models, name, None)
         if fn is None:
             raise ValueError(f"Unknown convnext model {name}")
-        model = fn(pretrained=mcfg.get("pretrained", False))
+        model = fn(weights=mcfg.get("pretrained", False))
         num_classes = mcfg.get("num_classes", 10)
         if hasattr(model, 'classifier'):
             model.classifier[2] = nn.Linear(model.classifier[2].in_features, num_classes)
@@ -46,7 +46,7 @@ def create_model(config: Dict):
         fn = getattr(torchvision.models, name, None)
         if fn is None:
             raise ValueError(f"Unknown resnet model {name}")
-        model = fn(pretrained=mcfg.get("pretrained", False))
+        model = fn(weights=mcfg.get("pretrained", False))
         num_classes = mcfg.get("num_classes", 10)
         model.fc = nn.Linear(model.fc.in_features, num_classes)
         if cifarVersion:
