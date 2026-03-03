@@ -13,8 +13,11 @@ def create_model(config: Dict):
     """Instantiate a model described by the configuration dictionary.
 
     The config should include an entry "model" which itself is a dict
-    containing a "name" (e.g. "convnext_tiny", "resnet18", "vit_moe") and
-    additional parameters specific to that family.
+    containing a "name" (e.g. "convnext_tiny", "resnet18", "vit_moe") 
+    and additional parameters specific to that family. 
+    
+    If resnet has "-cifar" suffix, it will use a version optimized 
+    for CIFAR-10.
 
     Returns the created torch.nn.Module.
     """
@@ -36,12 +39,23 @@ def create_model(config: Dict):
         return model
 
     elif name.startswith("resnet"):
+        cifarVersion = False
+        if name.endswith("-cifar"):
+            name = name[:-6]
+            cifarVersion = True
         fn = getattr(torchvision.models, name, None)
         if fn is None:
             raise ValueError(f"Unknown resnet model {name}")
         model = fn(pretrained=mcfg.get("pretrained", False))
         num_classes = mcfg.get("num_classes", 10)
         model.fc = nn.Linear(model.fc.in_features, num_classes)
+        if cifarVersion:
+            # Replace 7x7 conv with 3x3 stride 1
+            model.conv1 = nn.Conv2d(3, 64, kernel_size=3, stride=1, padding=1, bias=False)
+            # Remove maxpool
+            model.maxpool = nn.Identity()
+            # Fix classifier
+            model.fc = nn.Linear(model.fc.in_features, num_classes)
         return model
 
     elif name == "vit_moe":

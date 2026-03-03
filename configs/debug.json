@@ -18,6 +18,7 @@
   "dataset": "cifar10",
   "dataset_root": "./datasets",
   "mini_dataset": 5000,                // integer sample count or null for full
+   "resize": 0,
 
   // --------------------------------------------------------------------
   // Partitioning (pick one of these blocks)

@@ -77,8 +77,7 @@ def make_mini_cifar(root: str, num_samples: int, seed: int | None = 0,
     ensure_cifar10(root)
     if transform is None:
         transform = transforms.Compose([
-            transforms.Resize(224),
-            transforms.ToTensor(),
+                    transforms.ToTensor(),
         ])
     full = torchvision.datasets.CIFAR10(root=root, train=train,
                                         download=False, transform=transform)
@@ -279,8 +278,15 @@ def create_dataloaders(config: Dict) -> Dict:
         np.random.seed(dataset_seed)
         random.seed(dataset_seed)
         torch.manual_seed(dataset_seed)
-    trf = transforms.Compose([
-        transforms.Resize(config.get("resize", 224)),
+    
+    resize = config.get("resize", 0)
+    if resize > 0:
+        trf = transforms.Compose([
+        transforms.Resize(resize),
+        transforms.ToTensor(),
+    ])
+    else: 
+        trf = transforms.Compose([
         transforms.ToTensor(),
     ])
 
