@@ -3,6 +3,8 @@ import torch
 import random
 import numpy as np
 from typing import Dict, Any
+from pathlib import Path
+import re
 
 from dataset_fcns.dataset_utils import create_dataloaders
 from models_fcns.model_utils import create_model
@@ -25,13 +27,15 @@ def load_config(path: str) -> Dict[str, Any]:
     with open(path) as f:
         raw = f.read()
     # remove line comments
-    import re
     raw = re.sub(r"//.*", "", raw)
     # remove block comments
     raw = re.sub(r"/\*.*?\*/", "", raw, flags=re.DOTALL)
     cfg = json.loads(raw)
 
     print(f"Loading experiment configuration from {path}")
+    # always use a central results directory for outputs
+
+    Path("results").mkdir(exist_ok=True)
     # show a compact summary of the most important fields
     print(f" dataset         : {cfg.get('dataset')} @ {cfg.get('dataset_root','./datasets')}")
     print(f" partitions      : {cfg.get('num_partitions')}  type={cfg.get('partition',{}).get('type')} ")
@@ -40,18 +44,39 @@ def load_config(path: str) -> Dict[str, Any]:
     # full config dump for reference
     print(json.dumps(cfg, indent=2))
 
-    # seed handling: allow multiple independent seeds
+    # seed handling: allow multiple independent seeds; value 0 or the string
+    # "random" means "do not set a seed" so the RNGs behave nondeterministically.
     seeds = cfg.get("seeds", {})
-    global_seed = seeds.get("global", cfg.get("seed", 0))
-    dataset_seed = seeds.get("dataset", global_seed)
-    model_seed = seeds.get("model", global_seed)
-    training_seed = seeds.get("training", global_seed)
-    pretrain_seed = seeds.get("pretrain", global_seed)
-    replay_seed = seeds.get("replay", global_seed)
-    _set_seed(global_seed)
 
-    # show seed summary
-    print(f" seeds: global={global_seed}, dataset={dataset_seed}, model={model_seed}, training={training_seed}")
+    def _norm(s):
+        if s is None:
+            return None
+        if isinstance(s, str) and s.lower() == "random":
+            return None
+        try:
+            iv = int(s)
+            if iv == 0:
+                return None
+            return iv
+        except Exception:
+            return None
+
+    global_seed = _norm(seeds.get("global", cfg.get("seed", None)))
+    dataset_seed = _norm(seeds.get("dataset", global_seed))
+    model_seed = _norm(seeds.get("model", global_seed))
+    training_seed = _norm(seeds.get("training", global_seed))
+    pretrain_seed = _norm(seeds.get("pretrain", global_seed))
+    replay_seed = _norm(seeds.get("replay", global_seed))
+
+    # apply global seed if requested; per-stage code (e.g. dataset loader)
+    # will consider the other values separately.
+    if global_seed is not None:
+        _set_seed(global_seed)
+
+    # show seed summary (None means random/unspecified)
+    print(
+        f" seeds: global={global_seed}, dataset={dataset_seed}, model={model_seed}, training={training_seed}"
+    )
 
     # create dataset and dataloaders first; pass seeds dict so loader can
     # use the partition-specific seed if provided
@@ -62,7 +87,9 @@ def load_config(path: str) -> Dict[str, Any]:
     pretrain_loader = data_objs.get("pretrain_loader", None)
 
     # build model
-    torch.manual_seed(model_seed)
+    if model_seed is not None:
+        torch.manual_seed(model_seed)
+        
     model = create_model(cfg)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = model.to(device)

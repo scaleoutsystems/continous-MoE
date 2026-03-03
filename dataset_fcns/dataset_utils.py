@@ -8,6 +8,8 @@ from torch.utils.data import Subset, DataLoader
 import torchvision
 from torchvision import transforms
 
+import matplotlib.pyplot as plt
+
 
 def ensure_cifar10(root: str, download: bool = True):
     """Download CIFAR-10 dataset if not already present."""
@@ -17,7 +19,56 @@ def ensure_cifar10(root: str, download: bool = True):
     return
 
 
-def make_mini_cifar(root: str, num_samples: int, seed: int = 0,
+def ensure_imagenet(root: str):
+    """Make sure ImageNet data exists under ``root``.
+
+    We do **not** attempt to download ImageNet automatically; the user must
+    place a copy of the dataset (e.g. ILSVRC2012) into the datasets folder.
+    If the expected train/val subdirectories are missing we raise an error
+    with instructions.
+    """
+    # common layout: root/imagenet/train and root/imagenet/val or
+    # root/ILSVRC2012_img_train
+    candidates = [
+        os.path.join(root, 'imagenet'),
+        os.path.join(root, 'ILSVRC2012_img_train'),
+    ]
+    exists = any(os.path.isdir(c) for c in candidates)
+    if not exists:
+        raise RuntimeError(
+            "ImageNet data not found under dataset_root. "
+            "Please download ImageNet yourself and place the directory in '"
+            f"{root}' (e.g. create '{root}/imagenet')."
+        )
+
+
+def ensure_imagenette(root: str):
+    """Verify that Imagenette data is available."""
+    # dataset repo uses folder named imagenette2
+    imnet_root = os.path.join(root, 'imagenette2')
+    if not os.path.isdir(imnet_root):
+        raise RuntimeError(
+            "Imagenette directory not found under dataset_root. "
+            "Please download Imagenette and unpack it to '"
+            f"{imnet_root}'."
+        )
+
+
+def ensure_core50(root: str):
+    """Check for Core50 dataset.
+
+    The expected layout is ``root/core50`` but the loader does not inspect
+    the internals. The user must supply the dataset manually.
+    """
+    core_root = os.path.join(root, 'core50')
+    if not os.path.isdir(core_root):
+        raise RuntimeError(
+            "Core50 directory not found under dataset_root. "
+            "Please download Core50 and place it in '" f"{core_root}'."
+        )
+
+
+def make_mini_cifar(root: str, num_samples: int, seed: int | None = 0,
                     train: bool = True, transform=None):
     """Return a small subset of CIFAR-10 containing *num_samples* images.
 
@@ -31,7 +82,7 @@ def make_mini_cifar(root: str, num_samples: int, seed: int = 0,
         ])
     full = torchvision.datasets.CIFAR10(root=root, train=train,
                                         download=False, transform=transform)
-    rng = np.random.RandomState(seed)
+    rng = np.random.RandomState(seed) if (seed is not None and seed != 0) else np.random
     indices = rng.choice(len(full), size=num_samples, replace=False).tolist()
     # convert to plain list (type checker sometimes complains)
     return Subset(full, list(indices))  # type: ignore
@@ -43,7 +94,7 @@ def dirichlet_split(
     alpha: float,
     min_size: int = 10,
     balanced: bool = False,
-    seed: int = 42,
+    seed: int | None = 0,
     max_attempts: int = 10,
 ) -> List[List[int]]:
     """Split indices according to a Dirichlet distribution.
@@ -51,7 +102,8 @@ def dirichlet_split(
     This is the same implementation copied/adapted from the project notebook
     and returns a list of index lists, one per partition.
     """
-    np.random.seed(seed)
+    if seed is not None and seed != 0:
+        np.random.seed(seed)
     targets = np.array(targets)
     num_classes = len(np.unique(targets))
     N = len(targets)
@@ -111,13 +163,13 @@ def dirichlet_split(
                        f"{max_attempts} attempts")
 
 
-def static_split(indices: List[int], num_partitions: int, seed: int = 0) -> List[List[int]]:
+def static_split(indices: List[int], num_partitions: int, seed: int | None = 0) -> List[List[int]]:
     """Split a list of indices into *num_partitions* contiguous chunks.
 
     Alternates according to a shuffled permutation so class-balance is preserved
     when the input has randomized order.
     """
-    rng = np.random.RandomState(seed)
+    rng = np.random.RandomState(seed) if seed is not None and seed != 0 else np.random
     arr = np.array(indices)
     rng.shuffle(arr)
     length = len(arr)
@@ -136,7 +188,7 @@ def create_train_test_loaders(
     train_frac: float = 0.8,
     batch_size: int = 128,
     shuffle: bool = True,
-    seed: int = 0,
+    seed: int | None = 0,
     num_workers: int = 4,
     prefetch_factor: int = 2,
 ) -> Tuple[List[DataLoader], List[DataLoader]]:
@@ -145,8 +197,10 @@ def create_train_test_loaders(
     The dataset is split into train/test for each partition and DataLoader objects
     are constructed. Shuffling/randomness is seeded for reproducibility.
     """
-    np.random.seed(seed)
-    torch.manual_seed(seed)
+    # only seed if a nonzero value was provided; 0 means "random"
+    if seed:
+        np.random.seed(seed)
+        torch.manual_seed(seed)
 
     train_loaders = []
     test_loaders = []
@@ -199,31 +253,62 @@ def create_dataloaders(config: Dict) -> Dict:
     root = config.get("dataset_root", "./datasets")
     name = config.get("dataset", "cifar10")
     mini = config.get("mini_dataset", None)
-    # print(f"[DEBUG] create_dataloaders: mini_dataset={mini}")
 
     # seed handling: allow finer control via config['seeds']
     seeds = config.get("seeds", {})
-    dataset_seed = seeds.get("dataset", seeds.get("global", 0))
-    partition_seed = seeds.get("partition", dataset_seed)
-    loader_seed = seeds.get("loader", dataset_seed)
-    pretrain_seed = seeds.get("pretrain", dataset_seed)
-    # seed the various RNGs before dataset construction
-    np.random.seed(dataset_seed)
-    random.seed(dataset_seed)
-    torch.manual_seed(dataset_seed)
+    # helper that interprets 0 or missing as "no seeding"
+    def _norm(s):
+        if s is None:
+            return None
+        if isinstance(s, str) and s.lower() == "random":
+            return None
+        try:
+            iv = int(s)
+            if iv == 0:
+                return None
+            return iv
+        except Exception:
+            return None
+    global_seed = _norm(seeds.get("global", config.get("seed", None)))
+    dataset_seed = _norm(seeds.get("dataset", global_seed))
+    partition_seed = _norm(seeds.get("partition", dataset_seed))
+    loader_seed = _norm(seeds.get("loader", dataset_seed))
+    pretrain_seed = _norm(seeds.get("pretrain", dataset_seed))
+    # seed the various RNGs before dataset construction if requested
+    if dataset_seed is not None:
+        np.random.seed(dataset_seed)
+        random.seed(dataset_seed)
+        torch.manual_seed(dataset_seed)
     trf = transforms.Compose([
         transforms.Resize(config.get("resize", 224)),
         transforms.ToTensor(),
     ])
 
     # load base dataset
-    if name.lower() == "cifar10":
+    lname = name.lower()
+    if lname == "cifar10":
         if mini is not None:
             dataset = make_mini_cifar(root, mini, dataset_seed, train=True, transform=trf)
         else:
             ensure_cifar10(root)
             dataset = torchvision.datasets.CIFAR10(root=root, train=True,
                                                    download=False, transform=trf)
+    elif lname == "imagenet":
+        ensure_imagenet(root)
+        # ImageFolder will read whatever images are in the train directory
+        img_root = os.path.join(root, "imagenet")
+        if os.path.isdir(os.path.join(img_root, "train")):
+            img_root = os.path.join(img_root, "train")
+        dataset = torchvision.datasets.ImageFolder(img_root, transform=trf)
+    elif lname == "imagenette":
+        ensure_imagenette(root)
+        img_root = os.path.join(root, "imagenette2")
+        if os.path.isdir(os.path.join(img_root, "train")):
+            img_root = os.path.join(img_root, "train")
+        dataset = torchvision.datasets.ImageFolder(img_root, transform=trf)
+    elif lname == "core50":
+        ensure_core50(root)
+        dataset = torchvision.datasets.ImageFolder(os.path.join(root, "core50"), transform=trf)
     else:
         raise ValueError(f"Unsupported dataset {name}")
 
@@ -319,8 +404,6 @@ def plot_partition_distributions(train_loaders, test_loaders, num_classes=10, cl
     straddles the boundary.  Instead we inspect each loader's underlying
     ``Subset`` indices and fetch labels from the base dataset.
     """
-    import matplotlib.pyplot as plt
-    import numpy as np
 
     num_partitions = len(train_loaders)
     fig, axes = plt.subplots(3, num_partitions, figsize=(4*num_partitions, 12))

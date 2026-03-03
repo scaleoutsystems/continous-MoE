@@ -2,6 +2,7 @@ import torch
 import numpy as np
 from pathlib import Path
 import json
+from datetime import datetime
 
 
 class DIL_Logger:
@@ -13,9 +14,17 @@ class DIL_Logger:
         self.R_final = []
         self.best_past = np.zeros(N)
 
+        # history of per-epoch metrics
         self.history = []
+        # record when domains end (index in history)
         self.domain_boundaries = []
 
+        # hold confusion matrices for every finalized domain
+        self.confusions = []
+        # keep all intermediate R matrices (after each compute_metrics call)
+        self.R_history = []
+
+        # saving directory is fixed to results by default; callers may override
         self.save_dir = Path(save_dir)
         self.save_dir.mkdir(exist_ok=True)
 
@@ -72,6 +81,8 @@ class DIL_Logger:
             if self.R_final
             else np.array([domain_acc])
         )
+        # keep a copy of the current R matrix for later inspection/plotting
+        self.R_history.append(R_temp.copy())
 
         # Average Incremental Accuracy (AIA): mean of current row over seen domains
         avg_inc_acc = np.nanmean(R_temp[i, :i+1])
@@ -122,15 +133,20 @@ class DIL_Logger:
         }
 
     def finalize_domain(self, domain_acc, preds, targets):
+        """Call at the end of each domain.
+
+        The old implementation persisted a per-domain confusion matrix to
+        disk; we now accumulate everything in memory and let ``save`` dump a
+        single consolidated file.
+        """
         self.R_final.append(domain_acc.copy())
         self.best_past = np.maximum(self.best_past, domain_acc)
 
-        # Confusion matrix
+        # Confusion matrix for this domain
         conf = torch.zeros(self.C, self.C)
         for t, p in zip(targets, preds):
             conf[t.long(), p.long()] += 1
-
-        torch.save(conf, self.save_dir / f"conf_domain_{len(self.R_final)-1}.pt")
+        self.confusions.append(conf)
 
         self.domain_boundaries.append(len(self.history))
 
@@ -138,17 +154,42 @@ class DIL_Logger:
         self.history.append(metrics)
 
     def save(self):
-        # include metadata such as configuration path and timestamp if available
+        """Write all logged information to a single file.
+
+        The filename encodes the model & dataset (if available) plus a
+        timestamp in MMddhhmm format.  The resulting file is a pickled
+        dictionary that contains the history, confusion matrices, R matrices
+        and any metadata; loading it back provides everything needed to
+        reproduce the plots.
+        """
+        # create common metadata
         meta = {"save_time": np.datetime64("now").astype(str)}
+        model_name = "model"
+        dataset_name = "dataset"
         if hasattr(self, "config_file") and self.config_file is not None:
             meta["config_file"] = self.config_file
-        out = {
-            "metadata": meta,
-            "history": self.history
-        }
-        # if history already had config info it can override; caller may add it before save
-        with open(self.save_dir / "metrics.json", "w") as f:
-            json.dump(out, f, indent=2)
+            try:
+                with open(self.config_file) as f:
+                    cfg = json.load(f)
+                model_name = cfg.get("model", {}).get("name", model_name)
+                dataset_name = cfg.get("dataset", dataset_name)
+            except Exception:
+                pass
 
-        np.save(self.save_dir / "R_final.npy",
-                np.array(self.R_final))
+        now = datetime.now()
+        stamp = now.strftime("%m%d%H%M")
+        fname = f"{model_name}_{dataset_name}_{stamp}.pt"
+        outpath = self.save_dir / fname
+
+        save_dict = {
+            "metadata": meta,
+            "history": self.history,
+            "R_final": np.array(self.R_final),
+            "R_history": [r.tolist() for r in self.R_history],
+            # convert confusions to cpu tensors for portability
+            "confusion_matrices": [c.cpu() if torch.is_tensor(c) else c
+                                   for c in self.confusions],
+        }
+        torch.save(save_dict, outpath)
+
+        return outpath

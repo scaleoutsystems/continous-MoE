@@ -2,6 +2,8 @@
   // --------------------------------------------------------------------
   // Seeds (optional): global defaults and per-stage overrides
   "seeds": {
+    // any seed value of 0 (or the string "random") means "do not set a
+    // seed"; this allows parts of the pipeline to remain nondeterministic.
     "global": 123
     // "dataset": 123,
     // "partition": 123,

@@ -281,39 +281,6 @@ class ViTMoE(nn.Module):
                 results.append({'layer_index': idx, 'fraction': stats.get('fraction', []), 'samples': stats.get('samples', 0)})
         return results
 
-
-# Training loop for ViT-MoE (adapted from the shared continual trainer)
-# DEPRECATED - should be done in the main loop.
-# def train_moe(model,
-#               router_freeze_after_batches: Optional[int] = None,
-#               router_balancing: bool = False, router_balance_strength: float = 0.1):
-#     """Continual-stream training loop with optional router-freezing, router-balancing
-#     and optional replay-buffer sampling.
-
-#     This trainer now detects a shuffled DataLoader and will skip class-boundary
-#     testing/prints while still accumulating per-class metrics. When
-#     `test_interval=='class'` with shuffled training we run a single final
-#     evaluation so callers still get a populated `test_history`.
-#     """
-
-#     # freeze router when requested
-#     if router_freeze_after_batches is not None and batch_count == router_freeze_after_batches:
-#         if hasattr(model, 'freeze_routing'):
-#             model.freeze_routing(True)
-
-#     # optional router-balancing auxiliary loss (differentiable via gate probs)
-#     if router_balancing:
-#         bal_loss = 0.0
-#         for m in model.modules():
-#             if isinstance(m, MoE) and getattr(m, '_last_gate_probs', None) is not None:
-#                 p_mean = m._last_gate_probs.mean(dim=0)  # (E,)
-#                 target = torch.full_like(p_mean, 1.0 / float(max(1, m.num_experts)))
-#                 bal_loss = bal_loss + ((p_mean - target) ** 2).mean()
-#         if isinstance(bal_loss, torch.Tensor):
-#             loss = loss + router_balance_strength * bal_loss
-
-#     return
-
 # TODO: Add in a function that returns MoE expert loads.
 # TODO: Add in a function that calculates the router balance loss.
 # TODO: Add in a function that freezes the router. Should also remove the router balance loss and remove the parameters from the optimizer.

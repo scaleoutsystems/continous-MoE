@@ -2,7 +2,9 @@
   // --------------------------------------------------------------------
   // Seeds (optional): global defaults and per-stage overrides
   "seeds": {
-    "global": 43
+    // any seed value of 0 (or the string "random") means "do not set a
+    // seed"; this allows parts of the pipeline to remain nondeterministic.
+    "global": 0
     // "dataset": 123,
     // "partition": 123,
     // "model": 123,
@@ -15,7 +17,7 @@
   // Dataset specification
   "dataset": "cifar10",
   "dataset_root": "./datasets",
-  "mini_dataset": 1000,                // integer sample count or null for full
+  "mini_dataset": 5000,                // integer sample count or null for full
 
   // --------------------------------------------------------------------
   // Partitioning (pick one of these blocks)
@@ -88,7 +90,7 @@
     "T_max": 5
   },
 
-  "epochs_per_domain": 3,
+  "epochs_per_domain": 5,
 
   // --------------------------------------------------------------------
   // Continual learning options

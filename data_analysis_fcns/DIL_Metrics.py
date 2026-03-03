@@ -1,12 +1,18 @@
-def plot_results(log_dir="results"):
-    import json
+def plot_results(log_dir):
     import matplotlib.pyplot as plt
     from pathlib import Path
+    import torch
 
     log_dir = Path(log_dir)
 
-    with open(log_dir / "metrics.json") as f:
-        data = json.load(f)
+    data = None
+    if log_dir.is_file() and log_dir.suffix == ".pt":
+        # direct file path passed
+        data = torch.load(log_dir)
+    else:
+        raise FileNotFoundError(
+            f"Please pass the path to a .pt file, not {log_dir}"
+        )
     # support both old-format (list) and new format (dict with metadata)
     hist = data.get("history", data)
 
