@@ -7,9 +7,9 @@ from datetime import datetime
 
 class DIL_Logger:
     def __init__(self, N, C, baseline=None, save_dir="results", config_file=None):
-        self.N = N
-        self.C = C
-        self.baseline = baseline
+        self.N = N  # number of domains
+        self.C = C  # number of classes
+        self.baseline = baseline  # baseline accuracy
 
         self.R_final = []
         self.best_past = np.zeros(N)

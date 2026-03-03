@@ -2,6 +2,8 @@ def plot_results(log_dir):
     import matplotlib.pyplot as plt
     from pathlib import Path
     import torch
+    import numpy as np
+    from sklearn.metrics import ConfusionMatrixDisplay
 
     log_dir = Path(log_dir)
 
@@ -84,3 +86,61 @@ def plot_results(log_dir):
     plt.title("Continual Learning Metrics")
     plt.xlabel("Epoch")
     plt.show()
+
+    # -----------------------
+    # Confusion matrices
+    # -----------------------
+    confusions = data.get("confusion_matrices", None)
+    if confusions is None:
+        print("No confusion matrices found in log data.")
+        return
+
+    for d, conf in enumerate(confusions):
+
+        if torch.is_tensor(conf):
+            conf = conf.cpu().numpy()
+
+        conf = conf.astype(float)
+
+        # Row-normalize (P(pred=j | true=i))
+        row_sums = conf.sum(axis=1, keepdims=True)
+        row_sums[row_sums == 0] = 1.0
+        conf_norm = conf / row_sums
+
+        remove_empty = False # set to True to exclude classes with no samples in this domain
+        class_names = None # optionally provide class names as a list, not currently supported by DIL_Logger but could be added as metadata in the future
+
+        # Optionally remove empty classes
+        if remove_empty:
+            active = (conf.sum(axis=1) > 0) | (conf.sum(axis=0) > 0)
+            conf_norm = conf_norm[active][:, active]
+            labels = (
+                np.array(class_names)[active]
+                if class_names is not None
+                else np.arange(conf.shape[0])[active]
+            )
+        else:
+            labels = (
+                class_names
+                if class_names is not None
+                else np.arange(conf.shape[0])
+            )
+
+        fig, ax = plt.subplots(figsize=(6, 5))
+
+        disp = ConfusionMatrixDisplay(
+            confusion_matrix=conf_norm,
+            display_labels=labels,
+        )
+
+        disp.plot(
+            ax=ax,
+            cmap="Blues",
+            values_format=".2f",
+            colorbar=True,
+            im_kw={"vmin": 0.0, "vmax": 1.0}
+        )
+
+        ax.set_title(f"Domain {d} (Row-normalized)")
+        plt.tight_layout()
+        plt.show()
