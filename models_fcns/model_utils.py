@@ -58,7 +58,7 @@ def create_model(config: Dict):
             model.fc = nn.Linear(model.fc.in_features, num_classes)
         return model
 
-    elif name == "vit_moe":
+    elif name == "vit_moe" or name == "moe_vit":
         if create_moe_vit is None:
             raise ImportError("MoE ViT factory not found; ensure models_classes is on PYTHONPATH")
         p = mcfg.copy()

@@ -36,7 +36,7 @@ class PatchEmbed(nn.Module):
 
     def forward(self, x):
         # x: (B, C, H, W) -> (B, 1, C') where C' == embed_dim
-        B = x.shape[0]
+        # B = x.shape[0]
         x = self.proj(x)              # (B, embed_dim, H, W)
         x = x.mean(dim=[2, 3], keepdim=False)  # global average pool -> (B, embed_dim)
         x = x.unsqueeze(1)            # (B, 1, embed_dim)
@@ -217,8 +217,7 @@ class ViTMoE(nn.Module):
                                       in_chans=in_chans, embed_dim=embed_dim)
         # single-token (full-image) embedding — no patch/tokenization
         num_patches = 1
-        self.use_class_token = False
-        self.cls_token = None
+        self.use_class_token = use_class_token
         self.pos_embed = nn.Parameter(torch.zeros(1, num_patches, embed_dim))
         self.pos_drop = nn.Dropout(p=0.0)
 
@@ -247,7 +246,7 @@ class ViTMoE(nn.Module):
         nn.init.trunc_normal_(self.pos_embed, std=0.02)
 
     def forward(self, x):
-        B = x.shape[0]
+        # B = x.shape[0]
         x = self.patch_embed(x)  # (B, 1, C)
         x = x + self.pos_embed
         x = self.pos_drop(x)
@@ -269,6 +268,10 @@ class ViTMoE(nn.Module):
         for p in self.get_router_parameters():
             p.requires_grad = not freeze
 
+    # TODO: Add in a function that slows the learning rate of the routers' parameters. Should be a configurable multiplier on the learning rate, add to config file for moe options. Also add into the example config file. Should also be able to select when to trigger this by batch, similar to freezing.
+
+    # TODO: Add in a function that calculates the router balance loss for each router, and defines a mask for each router's loss so it only affects the given router. If routers are frozen or router_balancing is false, should return None.
+
     def get_moe_utilization(self):
         """Return a list of per-MoE-layer utilization statistics (fraction per expert).
 
@@ -280,12 +283,6 @@ class ViTMoE(nn.Module):
                 stats = m.get_cumulative_stats() if hasattr(m, 'get_cumulative_stats') else {}
                 results.append({'layer_index': idx, 'fraction': stats.get('fraction', []), 'samples': stats.get('samples', 0)})
         return results
-
-# TODO: Add in a function that returns MoE expert loads.
-# TODO: Add in a function that calculates the router balance loss.
-# TODO: Add in a function that freezes the router. Should also remove the router balance loss and remove the parameters from the optimizer.
-# TODO: Add in a function that significantly reduces the learning rate of the router.
-
 
 def create_moe_vit(num_classes=10,
                    img_size=224, patch_size=224,

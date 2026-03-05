@@ -60,14 +60,14 @@
   // --------------------------------------------------------------------
   // Model configuration
   "model": {
-    "name": "resnet18",
+    "name": "moe_vit",
     "num_classes": 10,
-    "pretrained": false
+    "pretrained": false,
     // If using vit_moe, you may specify additional keys:
-    // "moe_layer_indices": "every_other",
-    // "moe_num_experts": 4,
-    // "moe_top_k": 1,
-    // "moe_shared_expert": false
+    "moe_layer_indices": "every_other",
+    "moe_num_experts": 4,
+    "moe_top_k": 1,
+    "moe_shared_expert": true
   },
 
   // --------------------------------------------------------------------
@@ -95,7 +95,7 @@
 
   // --------------------------------------------------------------------
   // Continual learning options
-  "router_balancing": false,
+  "router_balancing": true,
   "router_balance_strength": 0.1,
   "router_freeze_after_batches": null,
 
