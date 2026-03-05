@@ -98,11 +98,39 @@ def load_config(path: str) -> Dict[str, Any]:
     opt_cfg = cfg.get("optimizer", {"name": "adam"})
     loss_cfg = cfg.get("loss", {})
     lr = loss_cfg.get("lr", 1e-3)
+    # optionally reduce router learning rate
+    router_mult = cfg.get("router_lr_multiplier", 1.0)
     if opt_cfg["name"].lower() == "adam":
-        optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+        # if multiplier is zero we treat it as a freeze
+        if router_mult is None:
+            router_mult = 1.0
+        if router_mult <= 0 or not hasattr(model, "get_router_parameters"):
+            if router_mult <= 0 and hasattr(model, "freeze_routing"):
+                model.freeze_routing(True)
+            optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+        else:
+            router_params = list(model.get_router_parameters())
+            non_router = [p for p in model.parameters() if p not in set(router_params)]
+            param_groups = [{"params": non_router}]
+            if router_params:
+                param_groups.append({"params": router_params, "lr": lr * router_mult})
+            optimizer = torch.optim.Adam(param_groups, lr=lr)
     elif opt_cfg["name"].lower() == "sgd":
-        optimizer = torch.optim.SGD(model.parameters(), lr=lr,
-                                    momentum=opt_cfg.get("momentum", 0.0))
+        if router_mult is None:
+            router_mult = 1.0
+        if router_mult <= 0 or not hasattr(model, "get_router_parameters"):
+            if router_mult <= 0 and hasattr(model, "freeze_routing"):
+                model.freeze_routing(True)
+            optimizer = torch.optim.SGD(model.parameters(), lr=lr,
+                                        momentum=opt_cfg.get("momentum", 0.0))
+        else:
+            router_params = list(model.get_router_parameters())
+            non_router = [p for p in model.parameters() if p not in set(router_params)]
+            param_groups = [{"params": non_router}]
+            if router_params:
+                param_groups.append({"params": router_params, "lr": lr * router_mult})
+            optimizer = torch.optim.SGD(param_groups, lr=lr,
+                                        momentum=opt_cfg.get("momentum", 0.0))
     else:
         raise ValueError(f"Unsupported optimizer {opt_cfg['name']}")
 

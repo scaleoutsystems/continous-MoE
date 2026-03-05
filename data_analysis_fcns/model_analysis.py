@@ -6,26 +6,40 @@ from typing import Tuple
 def count_parameters(model: torch.nn.Module) -> Tuple[int, int]:
     """Return (total_params, active_params).
 
-    For standard architectures both numbers are the same.  For an MoE model we
-    estimate "active" parameters by looking at the router configuration and
-    assuming that only top-k experts are executed for each sample; this is a
-    rough upper bound (k * expert_size) but gives an idea of sparsity.
+    ``total_params`` is a straightforward sum over all model parameters.
+    ``active_params`` attempts to approximate the number of parameters that
+    would be touched during a forward pass under the MoE routing assumptions.
+
+    In particular, non-MoE modules contribute all of their parameters.  For an
+    MoE layer we assume that the router will execute at most ``top_k``
+    *unshared* experts plus *all* shared experts, and we always include the
+    router's own parameters.  Thus the worst-case cost for a layer is
+
+        expert_size * (num_shared_experts + top_k) + router_params
+
+    where ``expert_size`` is taken from a single expert module.  This yields a
+    tighter and more accurate estimate than the previous simplistic method.
     """
     total = int(sum(p.numel() for p in model.parameters()))
-    active = total
-    # heuristic for MoE
-    if hasattr(model, 'get_moe_utilization'):
-        # assume worst‑case k experts active per layer
-        act = 0
-        for m in model.modules():
-            if hasattr(m, 'num_experts') and hasattr(m, 'top_k'):
-                # each expert is an MLP: estimate parameter count as total/num_experts
-                # type: ignore - runtime check ensures ModuleList exists
-                expert_params = int(sum(p.numel() for p in m.experts[0].parameters()))  # type: ignore
-                act += expert_params * int(getattr(m, 'top_k', 0))
+    active = 0
+
+    # iterate through modules and accumulate active contribution.  when an MoE
+    # module is encountered we compute its layer contribution explicitly and
+    # skip over its submodules to avoid double-counting.
+    for m in model.modules():
+        from models_classes.moe_vit import MoE  # avoid circular import at module load
+        if isinstance(m, MoE):
+            # size of a single expert
+            if len(m.experts) > 0:
+                expert_params = int(sum(p.numel() for p in m.experts[0].parameters()))
             else:
-                act += int(sum(p.numel() for p in m.parameters()))
-        active = act
+                expert_params = 0
+            router_params = int(sum(p.numel() for p in m.gate.parameters()))
+            layer_active = expert_params * (m.num_shared_experts + m.top_k) + router_params
+            active += layer_active
+        else:
+            # non-MoE modules: count all parameters
+            active += int(sum(p.numel() for p in m.parameters()))
     return total, int(active)
 
 

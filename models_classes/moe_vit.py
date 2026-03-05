@@ -64,35 +64,57 @@ class MLP(nn.Module):
 class MoE(nn.Module):
     """Sparse Mixture-of-Experts layer (sparse dispatch by default).
 
-    - Routing is per-image (whole-image summary).
-    - Exposes gate probabilities for use by router-balancing regularizers.
-    - Tracks cumulative gate statistics for utilization metrics.
+    Each MoE layer is conceptually split into *unshared* experts that are
+    selected by the router and *shared* experts that are executed for every
+    sample.  The router only produces logits for the unshared experts and
+    selects `top_k` of them per-sample; the shared experts are simply added on
+    top unconditionally.  This makes the router softmax size independent of
+    the number of shared experts and simplifies auxiliary losses and
+    utilization statistics.
+
+    Routing can be done using either a mean over tokens or by treating the
+    first token as a dedicated "[CLS]" token; the latter is enabled with
+    ``route_with_cls_token=True``.
     """
-    def __init__(self, dim, hidden_dim, num_experts=4, top_k=1, shared_expert=False, dropout=0.0):
+
+    def __init__(self, dim, hidden_dim,
+                 num_unshared_experts: int = 4,
+                 num_shared_experts: int = 0,
+                 top_k: int = 1,
+                 dropout: float = 0.0,
+                 route_with_cls_token: bool = False):
         super().__init__()
-        assert num_experts >= 1
+        assert num_unshared_experts >= 0
+        assert num_shared_experts >= 0
+        assert num_unshared_experts + num_shared_experts > 0
         assert top_k >= 0
+
         self.dim = dim
         self.hidden_dim = hidden_dim
-        self.num_experts = num_experts
-        # default behaviour: sparse MoE with top-1 dispatch
-        self.top_k = min(top_k, num_experts)
-        self.shared_expert = shared_expert
+        self.num_unshared_experts = num_unshared_experts
+        self.num_shared_experts = num_shared_experts
+        # keep a backwards-compatible attribute for total experts
+        self.num_experts = num_unshared_experts + num_shared_experts
+        # router only chooses among the unshared experts
+        self.top_k = min(top_k, num_unshared_experts)
+        self.route_with_cls_token = route_with_cls_token
 
-        # experts: small MLPs
+        # experts list: unshared experts come first, then shared experts
+        total = self.num_experts
         self.experts = nn.ModuleList([
-            MLP(dim, hidden_dim, out_dim=dim, dropout=dropout) for _ in range(num_experts)
+            MLP(dim, hidden_dim, out_dim=dim, dropout=dropout)
+            for _ in range(total)
         ])
 
-        # gating (router) - routes based on a per-image summary vector
-        self.gate = nn.Linear(dim, num_experts)
+        # gating (router) - only over unshared experts
+        self.gate = nn.Linear(dim, num_unshared_experts)
 
-        # simple per-forward debug stats (kept detached)
-        self.register_buffer('last_importance', torch.zeros(num_experts), persistent=False)
-        self.register_buffer('last_load', torch.zeros(num_experts), persistent=False)
+        # per-forward debug stats (kept detached) only for unshared experts
+        self.register_buffer('last_importance', torch.zeros(num_unshared_experts), persistent=False)
+        self.register_buffer('last_load', torch.zeros(num_unshared_experts), persistent=False)
 
-        # cumulative stats used for utilization metrics (stored on CPU)
-        self.cumulative_gate_sum = torch.zeros(num_experts)
+        # cumulative stats used for utilization metrics (on CPU)
+        self.cumulative_gate_sum = torch.zeros(num_unshared_experts)
         self.cumulative_samples = 0
 
         # last differentiable gate probs (kept on device, not detached)
@@ -101,79 +123,133 @@ class MoE(nn.Module):
     def get_router_parameters(self):
         return self.gate.parameters()
 
+    # helper for optimizer adjustments --------------------------------------------------
+    def adjust_router_learning_rate(self, optimizer: torch.optim.Optimizer, multiplier: float):
+        """Modify ``optimizer`` so that router parameters use ``lr * multiplier``.
+
+        If ``multiplier`` is zero the routers are frozen (``requires_grad`` is
+        disabled) and they are removed from the optimizer's parameter groups.
+        The modified optimizer is returned (object may be mutated in place).
+        """
+        if multiplier == 0:
+            # zero multiplier treated as freezing: disable grads on router params
+            for p in self.get_router_parameters():
+                p.requires_grad = False
+            return optimizer
+        # collect router parameters and remove them from existing groups
+        router_params = list(self.get_router_parameters())
+        base_lr = None
+        # avoid ambiguous tensor comparisons by using id-based set
+        router_ids = {id(p) for p in router_params}
+        for group in optimizer.param_groups:
+            if base_lr is None and 'lr' in group:
+                base_lr = group['lr']
+            # filter out any parameters whose id appears in router_ids
+            group['params'] = [p for p in group['params'] if id(p) not in router_ids]
+        if base_lr is None or not router_params:
+            return optimizer
+        optimizer.add_param_group({'params': router_params, 'lr': base_lr * multiplier})
+        return optimizer
+
+    # balance loss helper ------------------------------------------------------------
+    def router_balance_loss(self, strength: float):
+        """Return scalar balancing loss for all routers.
+
+        The loss is computed only over the unshared experts because the gating
+        logits and ``_last_gate_probs`` have that size by design.
+        If ``strength`` is zero or routers are frozen this returns ``0.0``.
+        """
+        if not strength or strength <= 0:
+            return 0.0
+        loss = 0.0
+        for m in self.modules():
+            if isinstance(m, MoE) and m._last_gate_probs is not None:
+                p_mean = m._last_gate_probs.mean(dim=0)
+                target = torch.full_like(p_mean, 1.0 / float(max(1, p_mean.numel())))
+                loss = loss + ((p_mean - target) ** 2).mean()
+        return strength * loss
+
     def reset_cumulative_stats(self):
-        self.cumulative_gate_sum = torch.zeros(self.num_experts)
+        # keep stats only for the router outputs (unshared experts)
+        self.cumulative_gate_sum = torch.zeros(self.num_unshared_experts)
         self.cumulative_samples = 0
 
     def get_cumulative_stats(self):
         if self.cumulative_samples == 0:
-            return {'fraction': torch.zeros(self.num_experts).tolist(), 'samples': 0}
+            return {'fraction': [0.0] * self.num_unshared_experts, 'samples': 0}
         frac = (self.cumulative_gate_sum / float(max(1, self.cumulative_samples))).tolist()
         return {'fraction': frac, 'samples': int(self.cumulative_samples)}
 
     def forward(self, x):
-        """Sparse dispatch based on a whole-image summary (mean over tokens).
+        """Sparse dispatch based on a summary vector.
+
+        The summary is either the mean over tokens or the ``[CLS]`` token (index
+        0) depending on ``route_with_cls_token``.  Only the unshared experts are
+        selected by the router; shared experts are executed for every sample and
+        added without weighting.
 
         Args:
             x: tensor (B, N, C)
         Returns:
-            out: tensor (B, N, C) — combined expert outputs per-token per-sample
+            out: tensor (B, N, C) — combined expert outputs per-sample
         """
         B, N, C = x.shape
 
-        # Route by whole-image summary (mean pooling over tokens) so gating
-        # decisions are made per-sample rather than per-token/patch.
-        summary = x.mean(dim=1)  # (B, C)
-        logits = self.gate(summary)  # (B, E)
+        # compute routing summary
+        if self.route_with_cls_token:
+            summary = x[:, 0]
+        else:
+            summary = x.mean(dim=1)
+        logits = self.gate(summary)  # (B, U)
 
         # store differentiable gate probs (used by router-balancing loss)
-        gate_probs = F.softmax(logits, dim=-1)  # (B, E)
+        gate_probs = F.softmax(logits, dim=-1)  # (B, U)
         self._last_gate_probs = gate_probs
 
-        # accumulate CPU-side statistics for utilization reporting (keep stats on CPU)
-        # ensure both operands are on CPU to avoid device-mismatch during in-place add
+        # accumulate CPU-side statistics for utilization reporting
         self.cumulative_gate_sum = (self.cumulative_gate_sum.cpu() + gate_probs.detach().sum(dim=0).cpu())
         self.cumulative_samples += B
 
-        E = self.num_experts
-        k = min(self.top_k, E)
-        if k == 0:
+        U = self.num_unshared_experts
+        T = self.num_shared_experts
+        total = self.num_experts
+        k = min(self.top_k, U)
+        if k == 0 and T == 0:
             return x
 
-        # select top-k experts per sample
-        topk_vals, topk_idx = torch.topk(logits, k, dim=-1)  # (B, k)
-        selected_mask = torch.zeros((B, E), device=logits.device, dtype=torch.bool)
-        selected_mask.scatter_(1, topk_idx, True)
+        # select top-k unshared experts
+        selected_mask = torch.zeros((B, U), device=logits.device, dtype=torch.bool)
+        if k > 0:
+            _, topk_idx = torch.topk(logits, k, dim=-1)
+            selected_mask.scatter_(1, topk_idx, True)
 
-        # if shared expert is requested, always include expert 0 in the selection
-        if self.shared_expert:
-            selected_mask[:, 0] = True
+        # compute normalized weights among selected unshared experts
+        weights_un = torch.zeros((B, U), device=logits.device)
+        if k > 0:
+            very_neg = -1e9
+            masked_logits = logits.clone()
+            masked_logits[~selected_mask] = very_neg
+            weights_un = F.softmax(masked_logits, dim=-1) * selected_mask.float()
 
-        # compute normalized weights only among selected experts
-        very_neg = -1e9
-        masked_logits = logits.clone()
-        masked_logits[~selected_mask] = very_neg
-        weights = F.softmax(masked_logits, dim=-1) * selected_mask.float()  # (B, E)
-
-        # store simple stats (importance: sum of weights across batch; load: token-count proxy)
-        importance = weights.sum(dim=0)  # (E,) sum of weights across samples
-        load = selected_mask.float().sum(dim=0) * N  # (E,) approximate token load
+        # simple stats (importance/load) only for unshared experts
+        importance = weights_un.sum(dim=0)
+        load = selected_mask.float().sum(dim=0) * N
         self.last_importance = importance.detach().cpu()
         self.last_load = load.detach().cpu()
 
-        # Sparse execution: compute expert outputs only for selected experts per-sample.
+        # assemble output: weighted unshared + unweighted shared
         out = torch.zeros_like(x)
         for b in range(B):
-            sel = selected_mask[b].nonzero(as_tuple=False).squeeze(-1)
-            if sel.numel() == 0:
-                out[b] = x[b]
-                continue
-            tokens_b = x[b]  # (N, C)
+            tokens_b = x[b]
             combined = torch.zeros_like(tokens_b)
-            for e in sel:
-                w = weights[b, e]
-                expert_out = self.experts[int(e)](tokens_b)
-                combined = combined + w.unsqueeze(-1) * expert_out
+            # unshared contributions
+            for e in range(U):
+                if selected_mask[b, e]:
+                    w = weights_un[b, e]
+                    combined = combined + w.unsqueeze(-1) * self.experts[e](tokens_b)
+            # shared contributions
+            for e in range(U, total):
+                combined = combined + self.experts[e](tokens_b)
             out[b] = combined
 
         return out
@@ -215,10 +291,15 @@ class ViTMoE(nn.Module):
         super().__init__()
         self.patch_embed = PatchEmbed(img_size=img_size, patch_size=patch_size,
                                       in_chans=in_chans, embed_dim=embed_dim)
-        # single-token (full-image) embedding — no patch/tokenization
+        # start with a single token from the patch embed (whole-image summary)
         num_patches = 1
         self.use_class_token = use_class_token
-        self.pos_embed = nn.Parameter(torch.zeros(1, num_patches, embed_dim))
+        if use_class_token:
+            # learnable [CLS] token prepended to sequence
+            self.cls_token = nn.Parameter(torch.zeros(1, 1, embed_dim))
+            self.pos_embed = nn.Parameter(torch.zeros(1, num_patches + 1, embed_dim))
+        else:
+            self.pos_embed = nn.Parameter(torch.zeros(1, num_patches, embed_dim))
         self.pos_drop = nn.Dropout(p=0.0)
 
         # determine which layers are MoE
@@ -248,12 +329,15 @@ class ViTMoE(nn.Module):
     def forward(self, x):
         # B = x.shape[0]
         x = self.patch_embed(x)  # (B, 1, C)
+        if self.use_class_token:
+            cls_tokens = self.cls_token.expand(x.size(0), -1, -1)
+            x = torch.cat([cls_tokens, x], dim=1)
         x = x + self.pos_embed
         x = self.pos_drop(x)
         for blk in self.blocks:
             x = blk(x)
         x = self.norm(x)
-        # single-token representation (full-image)
+        # use first token as classification embedding
         cls = x[:, 0]
         out = self.head(cls)
         return out
@@ -268,14 +352,29 @@ class ViTMoE(nn.Module):
         for p in self.get_router_parameters():
             p.requires_grad = not freeze
 
-    # TODO: Add in a function that slows the learning rate of the routers' parameters. Should be a configurable multiplier on the learning rate, add to config file for moe options. Also add into the example config file. Should also be able to select when to trigger this by batch, similar to freezing.
+    def adjust_router_learning_rate(self, optimizer: torch.optim.Optimizer, multiplier: float):
+        """Wrapper that updates all MoE modules in the model."""
+        for m in self.modules():
+            if isinstance(m, MoE) and hasattr(m, 'adjust_router_learning_rate'):
+                optimizer = m.adjust_router_learning_rate(optimizer, multiplier)
+        return optimizer
 
-    # TODO: Add in a function that calculates the router balance loss for each router, and defines a mask for each router's loss so it only affects the given router. If routers are frozen or router_balancing is false, should return None.
+    def router_balance_loss(self, strength: float):
+        """Aggregate balance loss from all MoE layers."""
+        loss = 0.0
+        for m in self.modules():
+            if isinstance(m, MoE) and hasattr(m, 'router_balance_loss'):
+                loss = loss + m.router_balance_loss(strength)
+        return loss
+
+    # (router learning rate adjustments and balance loss helpers implemented above)
 
     def get_moe_utilization(self):
         """Return a list of per-MoE-layer utilization statistics (fraction per expert).
 
         Each element is a dict: {'layer_index': i, 'fraction': [...], 'samples': n}
+        The reported fractions correspond only to the *unshared* experts, since
+        the router does not operate over the shared set.
         """
         results = []
         for idx, m in enumerate(self.modules()):
@@ -288,23 +387,35 @@ def create_moe_vit(num_classes=10,
                    img_size=224, patch_size=224,
                    embed_dim=192, depth=8, num_heads=3, mlp_ratio=4.0,
                    moe_layer_indices: Optional[Union[List[int], str]] = 'every_other',
-                   moe_num_experts: int = 4, moe_top_k: int = 1, moe_shared_expert: bool = False,
+                   moe_num_unshared_experts: int = 4,
+                   moe_num_shared_experts: int = 0,
+                   moe_top_k: int = 1,
+                   moe_route_with_cls_token: bool = False,
                    pretrained: bool = False,
-                   router_balancing: bool = False, router_balance_strength: float = 0.1):
+                   router_balancing: bool = False, router_balance_strength: float = 0.1,
+                   router_lr_multiplier: float = 1.0):
     """Factory that builds a ViT with configurable MoE layers.
 
-    Returns the standard model package dict used in the notebook.
+    Args:
+    ``moe_num_unshared_experts``, ``moe_num_shared_experts``,
+    ``moe_top_k`` and ``moe_route_with_cls_token``.
     """
+    # expert counts provided directly
+    unshared = moe_num_unshared_experts
+    shared = moe_num_shared_experts
+
     moe_params = {
-        'num_experts': moe_num_experts,
+        'num_unshared_experts': unshared,
+        'num_shared_experts': shared,
         'top_k': moe_top_k,
-        'shared_expert': moe_shared_expert,
-        'dropout': 0.0
+        'dropout': 0.0,
+        'route_with_cls_token': moe_route_with_cls_token,
     }
 
     model = ViTMoE(img_size=img_size, patch_size=patch_size, num_classes=num_classes,
                    embed_dim=embed_dim, depth=depth, num_heads=num_heads, mlp_ratio=mlp_ratio,
-                   moe_layer_indices=moe_layer_indices, moe_params=moe_params)
+                   moe_layer_indices=moe_layer_indices, moe_params=moe_params,
+                   use_class_token=moe_route_with_cls_token)
 
     default_params = {
         'embed_dim': embed_dim,
@@ -312,12 +423,14 @@ def create_moe_vit(num_classes=10,
         'num_heads': num_heads,
         'mlp_ratio': mlp_ratio,
         'moe_layer_indices': moe_layer_indices,
-        'moe_num_experts': moe_num_experts,
+        'moe_num_unshared_experts': unshared,
+        'moe_num_shared_experts': shared,
         'moe_top_k': moe_top_k,
-        'moe_shared_expert': moe_shared_expert,
+        'moe_route_with_cls_token': moe_route_with_cls_token,
         'pretrained': pretrained,
         'router_balancing': router_balancing,
         'router_balance_strength': router_balance_strength,
+        'router_lr_multiplier': router_lr_multiplier,
     }
 
     return {
