@@ -4,7 +4,7 @@
   "seeds": {
     // any seed value of 0 (or the string "random") means "do not set a
     // seed"; this allows parts of the pipeline to remain nondeterministic.
-    "global": 123
+    "global": 0
     // "dataset": 123,
     // "partition": 123,
     // "model": 123,
@@ -17,8 +17,8 @@
   // Dataset specification
   "dataset": "cifar10",
   "dataset_root": "./datasets",
-  "mini_dataset": null,                // integer sample count or null for full
-  "resize": 0,
+  "mini_dataset": 10000,                // integer sample count or null for full
+  "resize": 0, // 0 = no resize
 
   // --------------------------------------------------------------------
   // Partitioning (pick one of these blocks)
@@ -62,15 +62,19 @@
   "model": {
     "name": "vit_moe", // "convnext_tiny", "resnet18", "vit_moe"
     "num_classes": 10,
-    "pretrained": false
+    "pretrained": false,
+    // optional override for input resolution; usually injected automatically
+    // by the loader based on the first batch.
+    // "img_size": 224,
+    "patch_size": 16,
     // If using vit_moe, you may specify additional keys for the MoE.
     // Configuration separates the number of unshared and shared experts
     // explicitly
-    // "moe_layer_indices": "every_other",
-    // "moe_num_unshared_experts": 3,
-    // "moe_num_shared_experts": 1,
-    // "moe_top_k": 1,
-    // "moe_route_with_cls_token": false
+    "moe_layer_indices": "every_other",
+    "moe_num_unshared_experts": 4,
+    "moe_num_shared_experts": 1,
+    "moe_top_k": 1, // only selects between unshared, shared are always used
+    "moe_route_with_cls_token": true
   },
 
   // --------------------------------------------------------------------
@@ -90,7 +94,7 @@
   // --------------------------------------------------------------------
   // Scheduler
   "scheduler": {
-    "name": null, // "cosine" for CosineAnnealingLR or null currently
+    "name": null // "cosine" for CosineAnnealingLR or null currently
     // Used for CosineAnnealing; if null, uses epochs_per_domain as T_max
     //"T_max": null
   },

@@ -5,6 +5,10 @@ Vision Transformer with Mixture-of-Experts (MoE) FFN layers.
 - Configurable: number of experts per MoE layer, top-k routing, shared expert,
   which layers are MoE layers (list or pattern), and ability to freeze router
   (gating) parameters after N training batches.
+- The architecture adapts to the resolution of the input images: the
+  patch embedding and positional embeddings will resize automatically when
+  the model sees a new image size, and the factory allows `img_size` to be
+  unspecified so that the loader can infer it at runtime.
 
 The factory function `create_moe_vit(...)` returns the same package dict as the
 other model factories so it plugs directly into the notebook.
@@ -23,23 +27,54 @@ import torch.nn.functional as F
 
 
 class PatchEmbed(nn.Module):
-    """Image-level embedder that produces a single token per image.
+    """Patch embedder for ViT-style tokenization.
 
-    For the continual / MoE experiments we route on whole-image summaries so
-    tokenization into many patches is unnecessary. This module returns a
-    tensor shaped (B, 1, embed_dim).
+    The input image is split into non-overlapping patches of size
+    ``patch_size`` and each patch is flattened and projected to ``embed_dim``
+    with a Conv2d.  ``img_size`` may be provided so that the number of
+    patches is known at construction time; if omitted the size is inferred
+    from the first forward pass.  In either case the image dimensions must
+    be divisible by ``patch_size``.
+
+    The output tensor has shape ``(B, num_patches, embed_dim)``.
     """
-    def __init__(self, img_size=224, patch_size=16, in_chans=3, embed_dim=192):
+
+    def __init__(self, img_size: Optional[int] = None, patch_size=16, in_chans=3, embed_dim=192):
         super().__init__()
-        # simple 1x1 conv to map channels -> embed_dim, followed by global avg pool
-        self.proj = nn.Conv2d(in_chans, embed_dim, kernel_size=1)
+        self.img_size = img_size
+        self.patch_size = patch_size
+        # grid_size/num_patches are lazy if img_size is unknown
+        if img_size is not None:
+            if img_size % patch_size != 0:
+                raise ValueError(f"img_size {img_size} not divisible by patch_size {patch_size}")
+            self.grid_size = img_size // patch_size
+            self.num_patches = self.grid_size * self.grid_size
+        else:
+            self.grid_size = None
+            self.num_patches = None
+        # conv2d with stride=patch_size to extract non-overlapping patches
+        self.proj = nn.Conv2d(in_chans, embed_dim, kernel_size=patch_size, stride=patch_size)
 
     def forward(self, x):
-        # x: (B, C, H, W) -> (B, 1, C') where C' == embed_dim
-        # B = x.shape[0]
-        x = self.proj(x)              # (B, embed_dim, H, W)
-        x = x.mean(dim=[2, 3], keepdim=False)  # global average pool -> (B, embed_dim)
-        x = x.unsqueeze(1)            # (B, 1, embed_dim)
+        # x: (B, C, H, W)
+        B, C, H, W = x.shape
+        # lazily infer size if not provided, or adapt if resolution changes
+        if self.img_size is None:
+            if H % self.patch_size != 0 or W % self.patch_size != 0:
+                raise ValueError(f"Input size {H}x{W} not divisible by patch_size {self.patch_size}")
+            self.img_size = H
+            self.grid_size = H // self.patch_size
+            self.num_patches = self.grid_size * self.grid_size
+        else:
+            if H != self.img_size or W != self.img_size:
+                # update stored size rather than complaining
+                if H % self.patch_size != 0 or W % self.patch_size != 0:
+                    raise ValueError(f"Input size {H}x{W} not divisible by patch_size {self.patch_size}")
+                self.img_size = H
+                self.grid_size = H // self.patch_size
+                self.num_patches = self.grid_size * self.grid_size
+        x = self.proj(x)  # (B, embed_dim, grid, grid)
+        x = x.flatten(2).transpose(1, 2)  # (B, num_patches, embed_dim)
         return x
 
 
@@ -283,23 +318,28 @@ class TransformerBlockMoE(nn.Module):
 
 
 class ViTMoE(nn.Module):
-    def __init__(self, *, img_size=224, patch_size=224, in_chans=3, num_classes=1000,
+    def __init__(self, *, img_size=224, patch_size=16, in_chans=3, num_classes=1000,
                  embed_dim=192, depth=8, num_heads=3, mlp_ratio=4.0,
                  moe_layer_indices: Optional[Union[List[int], str]] = None,
                  moe_params: Optional[dict] = None,
                  use_class_token=False):
         super().__init__()
+        # patch embedding may infer size at first forward pass if img_size is
+        # unknown; record initial value so we can allocate positional embeddings.
         self.patch_embed = PatchEmbed(img_size=img_size, patch_size=patch_size,
                                       in_chans=in_chans, embed_dim=embed_dim)
-        # start with a single token from the patch embed (whole-image summary)
-        num_patches = 1
+        num_patches = self.patch_embed.num_patches
         self.use_class_token = use_class_token
+        # positional embeddings are registered lazily; the actual number of
+        # tokens may not be known until the first forward if img_size was
+        # unspecified.  We still create the CLS token parameter here if needed
+        # since its size does not depend on the image size later.
         if use_class_token:
             # learnable [CLS] token prepended to sequence
             self.cls_token = nn.Parameter(torch.zeros(1, 1, embed_dim))
-            self.pos_embed = nn.Parameter(torch.zeros(1, num_patches + 1, embed_dim))
         else:
-            self.pos_embed = nn.Parameter(torch.zeros(1, num_patches, embed_dim))
+            self.register_parameter('cls_token', None)
+        self.pos_embed = None  # will be created in _init_pos_embed
         self.pos_drop = nn.Dropout(p=0.0)
 
         # determine which layers are MoE
@@ -323,15 +363,44 @@ class ViTMoE(nn.Module):
         self.norm = nn.LayerNorm(embed_dim)
         self.head = nn.Linear(embed_dim, num_classes)
 
-        # init
+        # init; if pos_embed has been created already, initialize it.  otherwise
+        # it will be initialized lazily in forward.
+        if self.pos_embed is not None:
+            nn.init.trunc_normal_(self.pos_embed, std=0.02)
+
+    def _init_pos_embed(self, seq_len: int, embed_dim: int):
+        """Allocate or resize positional embeddings to match ``seq_len``.
+
+        This is called on the first forward pass or whenever the number of
+        tokens (patches+cls) changes due to a different input resolution.  The
+        new positional embeddings are initialized from a normal distribution
+        with the same std used in the constructor.
+        """
+        if self.use_class_token:
+            num_patches = seq_len - 1
+        else:
+            num_patches = seq_len
+        # create new parameter on the same device as existing weights
+        device = None
+        for p in self.parameters():
+            device = p.device
+            break
+        if device is None:
+            device = torch.device('cpu')
+        self.pos_embed = nn.Parameter(torch.zeros(1, seq_len, embed_dim, device=device))
         nn.init.trunc_normal_(self.pos_embed, std=0.02)
 
     def forward(self, x):
         # B = x.shape[0]
-        x = self.patch_embed(x)  # (B, 1, C)
+        x = self.patch_embed(x)  # (B, num_patches, C)
         if self.use_class_token:
             cls_tokens = self.cls_token.expand(x.size(0), -1, -1)
             x = torch.cat([cls_tokens, x], dim=1)
+        # ensure positional embedding matches current sequence length
+        seq_len = x.size(1)
+        if self.pos_embed is None or self.pos_embed.size(1) != seq_len:
+            # we know embed_dim from x
+            self._init_pos_embed(seq_len, x.size(2))
         x = x + self.pos_embed
         x = self.pos_drop(x)
         for blk in self.blocks:
@@ -384,13 +453,13 @@ class ViTMoE(nn.Module):
         return results
 
 def create_moe_vit(num_classes=10,
-                   img_size=224, patch_size=224,
+                   img_size: Optional[int] = None, patch_size=16,
                    embed_dim=192, depth=8, num_heads=3, mlp_ratio=4.0,
                    moe_layer_indices: Optional[Union[List[int], str]] = 'every_other',
                    moe_num_unshared_experts: int = 4,
                    moe_num_shared_experts: int = 0,
                    moe_top_k: int = 1,
-                   moe_route_with_cls_token: bool = False,
+                   moe_route_with_cls_token: bool = True,
                    pretrained: bool = False,
                    router_balancing: bool = False, router_balance_strength: float = 0.1,
                    router_lr_multiplier: float = 1.0):
@@ -427,6 +496,7 @@ def create_moe_vit(num_classes=10,
         'moe_num_shared_experts': shared,
         'moe_top_k': moe_top_k,
         'moe_route_with_cls_token': moe_route_with_cls_token,
+        'img_size': img_size,
         'pretrained': pretrained,
         'router_balancing': router_balancing,
         'router_balance_strength': router_balance_strength,

@@ -43,6 +43,8 @@ def load_config(path: str) -> Dict[str, Any]:
     print(f" dataset         : {cfg.get('dataset')} @ {cfg.get('dataset_root','./datasets')}")
     print(f" partitions      : {cfg.get('num_partitions')}  type={cfg.get('partition',{}).get('type')} ")
     print(f" model           : {cfg.get('model',{}).get('name')}")
+    if 'patch_size' in cfg.get('model', {}):
+        print(f" patch_size       : {cfg['model']['patch_size']}")
     print(f" epochs_per_domain  : {epochs_per_domain}")
     # full config dump for reference
     print(json.dumps(cfg, indent=2))
@@ -88,6 +90,30 @@ def load_config(path: str) -> Dict[str, Any]:
     train_loaders = data_objs["train_loaders"]
     test_loaders = data_objs["test_loaders"]
     pretrain_loader = data_objs.get("pretrain_loader", None)
+
+    # determine image size from the dataset if possible and store in the
+    # model config so factories can adjust architectures automatically.
+    # we peek at the first training batch (or fall back to dataset[0]).
+    img_size = None
+    if train_loaders and len(train_loaders) > 0:
+        try:
+            for imgs, _ in train_loaders[0]:
+                if imgs is not None and imgs.ndim >= 4:
+                    img_size = imgs.shape[2]
+                break
+        except Exception:
+            img_size = None
+    if img_size is None and dataset is not None:
+        try:
+            sample = dataset[0][0]
+            if sample.ndim >= 3:
+                img_size = sample.shape[1]
+        except Exception:
+            img_size = None
+    if img_size is not None:
+        mcfg = cfg.setdefault("model", {})
+        if mcfg.get("img_size") is None:
+            mcfg["img_size"] = img_size
 
     # build model
     if model_seed is not None:
