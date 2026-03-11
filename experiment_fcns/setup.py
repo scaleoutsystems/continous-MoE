@@ -36,11 +36,14 @@ def load_config(path: str) -> Dict[str, Any]:
     # always use a central results directory for outputs
 
     Path("results").mkdir(exist_ok=True)
+
     # show a compact summary of the most important fields
+    epochs_per_domain = cfg.get("epochs_per_domain")
+
     print(f" dataset         : {cfg.get('dataset')} @ {cfg.get('dataset_root','./datasets')}")
     print(f" partitions      : {cfg.get('num_partitions')}  type={cfg.get('partition',{}).get('type')} ")
     print(f" model           : {cfg.get('model',{}).get('name')}")
-    print(f" epochs_per_dom  : {cfg.get('epochs_per_domain')}")
+    print(f" epochs_per_domain  : {epochs_per_domain}")
     # full config dump for reference
     print(json.dumps(cfg, indent=2))
 
@@ -115,6 +118,22 @@ def load_config(path: str) -> Dict[str, Any]:
             if router_params:
                 param_groups.append({"params": router_params, "lr": lr * router_mult})
             optimizer = torch.optim.Adam(param_groups, lr=lr)
+    elif opt_cfg["name"].lower() == "adamw":
+        # if multiplier is zero we treat it as a freeze
+        if router_mult is None:
+            router_mult = 1.0
+        if router_mult <= 0 or not hasattr(model, "get_router_parameters"):
+            if router_mult <= 0 and hasattr(model, "freeze_routing"):
+                model.freeze_routing(True)
+            optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
+        else:
+            router_params = list(model.get_router_parameters())
+            non_router = [p for p in model.parameters() if p not in set(router_params)]
+            param_groups = [{"params": non_router}]
+            if router_params:
+                param_groups.append({"params": router_params, "lr": lr * router_mult})
+            optimizer = torch.optim.AdamW(param_groups, lr=lr)
+        
     elif opt_cfg["name"].lower() == "sgd":
         if router_mult is None:
             router_mult = 1.0
@@ -139,9 +158,9 @@ def load_config(path: str) -> Dict[str, Any]:
     scheduler = None
     if sch_cfg:
         if sch_cfg.get("name") == "cosine":
+            T_max = epochs_per_domain if sch_cfg.get("T_max", None) is (None or 0) else sch_cfg.get("T_max")
             scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-                optimizer, T_max=sch_cfg.get("T_max", 10)
-            )
+                optimizer, T_max=T_max)
         elif sch_cfg.get("name") == "none":
             scheduler = None
         else:
@@ -149,7 +168,7 @@ def load_config(path: str) -> Dict[str, Any]:
 
     # loss
     loss_cfg = cfg.get("loss", {"name": "cross_entropy"})
-    if loss_cfg["name"] == "cross_entropy":
+    if loss_cfg["name"] == "cross_entropy" or loss_cfg["name"] == "weighted_cross_entropy":
         criterion = torch.nn.CrossEntropyLoss()
     else:
         raise ValueError(f"Unsupported loss {loss_cfg['name']}")
