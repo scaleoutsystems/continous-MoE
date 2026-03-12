@@ -9,6 +9,14 @@ import re
 from dataset_fcns.dataset_utils import create_dataloaders
 from models_fcns.model_utils import create_model
 
+# new loss functions
+from loss_classes.losses import (
+    WeightedCrossEntropy,
+    FocalLoss,
+    LOSS_WEIGHT_UPPER_LIMIT,
+)
+
+
 
 def _set_seed(seed: int):
     torch.manual_seed(seed)
@@ -181,23 +189,55 @@ def load_config(path: str) -> Dict[str, Any]:
 
     # scheduler
     sch_cfg = cfg.get("scheduler", {})
+    sch_name = sch_cfg.get("name", {})
     scheduler = None
-    if sch_cfg:
-        if sch_cfg.get("name") == "cosine":
+    if sch_name is not None:
+        if sch_name == "cosine":
             T_max = epochs_per_domain if sch_cfg.get("T_max", None) is (None or 0) else sch_cfg.get("T_max")
             scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
                 optimizer, T_max=T_max)
-        elif sch_cfg.get("name") == "none":
-            scheduler = None
         else:
             print(f"Warning: unknown scheduler {sch_cfg.get('name')} -- skipping")
 
     # loss
     loss_cfg = cfg.get("loss", {"name": "cross_entropy"})
-    if loss_cfg["name"] == "cross_entropy" or loss_cfg["name"] == "weighted_cross_entropy":
+    loss_name = loss_cfg.get("name", "cross_entropy").lower()
+    # common weighting options
+    weighted = loss_cfg.get("weighted", False)
+    upper_lim = loss_cfg.get("weight_upper_limit", LOSS_WEIGHT_UPPER_LIMIT)
+    cumul = loss_cfg.get("weight_cumulative", False)
+
+    if loss_name == "cross_entropy":
         criterion = torch.nn.CrossEntropyLoss()
+
+    elif loss_name == "weighted_cross_entropy":
+        num_classes = cfg.get("model", {}).get("num_classes")
+        if num_classes is None:
+            raise ValueError("num_classes must be specified in config to use weighted loss")
+        criterion = WeightedCrossEntropy(num_classes, upper_limit=upper_lim)
+        criterion._weight_cumulative = cumul
+
+    elif loss_name == "focal":
+        num_classes = cfg.get("model", {}).get("num_classes")
+        if num_classes is None:
+            raise ValueError("num_classes must be specified in config to use focal loss")
+        alpha = loss_cfg.get("alpha", 0.25)
+        gamma = loss_cfg.get("gamma", 2.0)
+        criterion = FocalLoss(
+            num_classes,
+            alpha=alpha,
+            gamma=gamma,
+            weight_upper_limit=upper_lim,
+            weighted=weighted,
+        )
+        criterion._weight_cumulative = cumul
+
     else:
-        raise ValueError(f"Unsupported loss {loss_cfg['name']}")
+        raise ValueError(f"Unsupported loss {loss_name}")
+
+    # ensure the loss module lives on the correct device
+    if hasattr(criterion, "to"):
+        criterion = criterion.to(device)
 
     return {
         "cfg": cfg,

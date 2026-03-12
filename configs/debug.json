@@ -63,8 +63,9 @@
     "name": "vit_moe", // "convnext_tiny", "resnet18", "vit_moe"
     "num_classes": 10,
     "pretrained": false,
-    // optional override for input resolution; usually injected automatically
-    // by the loader based on the first batch.
+    // "img_size" is added automatically by the loader based on the first
+    // training batch.  You may override it here if you know the input
+    // resolution in advance; otherwise leave it unspecified.
     // "img_size": 224,
     "patch_size": 16,
     // If using vit_moe, you may specify additional keys for the MoE.
@@ -80,8 +81,23 @@
   // --------------------------------------------------------------------
   // Loss and learning rate
   "loss": {
-    "name": "cross_entropy", //  "cross_entropy" or "weighted_cross_entropy"
-    "lr": 0.001
+    "name": "weighted_cross_entropy", // options: "cross_entropy", "weighted_cross_entropy", "focal"
+    "lr": 0.001,
+    // set to true to enable per-class weighting based on partition distribution
+    "weighted": true,
+    // upper limit applied when computing inverse-frequency weights
+    "weight_upper_limit": 20.0,
+    // if true new weights will be averaged with the previous set
+    "weight_cumulative": false,
+
+    // focal-loss specific parameters (ignored for plain CE)
+    // "alpha" may be a scalar, an array of length num_classes, or the
+    // string "auto"/null.  In the latter case the alpha values are computed
+    // from the current partition's class counts, identical to the behaviour
+    // of the weighted cross-entropy loss.
+
+    "alpha": "auto",
+    "gamma": 2.0
   },
 
   // --------------------------------------------------------------------
@@ -92,12 +108,13 @@
   },
 
   // --------------------------------------------------------------------
-  // Scheduler
-  "scheduler": {
-    "name": null // "cosine" for CosineAnnealingLR or null currently
+  // Scheduler (optional)
+  // "scheduler": {
+  //   "name": null 
+    // "cosine" for CosineAnnealingLR
     // Used for CosineAnnealing; if null, uses epochs_per_domain as T_max
     //"T_max": null
-  },
+  // },
 
   "epochs_per_domain": 5,
 

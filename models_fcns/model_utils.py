@@ -22,7 +22,7 @@ def create_model(config: Dict):
     Returns the created torch.nn.Module.
     """
     mcfg = config.get("model", {})
-    name = mcfg.get("name", "convnext_tiny")
+    name = mcfg.get("name", {})
     name = name.lower()
 
     if name.startswith("convnext"):
