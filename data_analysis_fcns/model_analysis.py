@@ -20,11 +20,13 @@ def count_parameters(model: torch.nn.Module) -> Tuple[int, int]:
     where ``expert_size`` is taken from a single expert module.  This yields a
     tighter and more accurate estimate than the previous simplistic method.
     """
-    total = int(sum(p.numel() for p in model.parameters()))
-    active = 0
+    parameters = list(model.parameters())
+    unique = {p.data_ptr(): p for p in parameters}.values()
+    total = sum(p.numel() for p in unique)
+    active = total
 
-    # iterate through modules and accumulate active contribution.  when an MoE
-    # module is encountered we compute its layer contribution explicitly and
+    # iterate through modules and accumulate inactive reduction.  when an MoE
+    # module is encountered we compute its layer reduction explicitly and
     # skip over its submodules to avoid double-counting.
     for m in model.modules():
         from models_classes.moe_vit import MoE  # avoid circular import at module load
@@ -34,12 +36,9 @@ def count_parameters(model: torch.nn.Module) -> Tuple[int, int]:
                 expert_params = int(sum(p.numel() for p in m.experts[0].parameters()))
             else:
                 expert_params = 0
-            router_params = int(sum(p.numel() for p in m.gate.parameters()))
-            layer_active = expert_params * (m.num_shared_experts + m.top_k) + router_params
-            active += layer_active
-        else:
-            # non-MoE modules: count all parameters
-            active += int(sum(p.numel() for p in m.parameters()))
+            # Remove number of unused unshared experts in each forward pass at this layer
+            layer_inactive = expert_params * (m.num_unshared_experts - m.top_k)
+            active -= layer_inactive
     return total, int(active)
 
 
