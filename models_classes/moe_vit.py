@@ -318,7 +318,7 @@ class TransformerBlockMoE(nn.Module):
 
 
 class ViTMoE(nn.Module):
-    def __init__(self, *, img_size=224, patch_size=16, in_chans=3, num_classes=1000,
+    def __init__(self, *, img_size: Optional[int] = None, patch_size=16, in_chans=3, num_classes=1000,
                  embed_dim=192, depth=8, num_heads=3, mlp_ratio=4.0,
                  moe_layer_indices: Optional[Union[List[int], str]] = None,
                  moe_params: Optional[dict] = None,
@@ -328,7 +328,9 @@ class ViTMoE(nn.Module):
         # unknown; record initial value so we can allocate positional embeddings.
         self.patch_embed = PatchEmbed(img_size=img_size, patch_size=patch_size,
                                       in_chans=in_chans, embed_dim=embed_dim)
-        num_patches = self.patch_embed.num_patches
+        # num_patches not used directly; kept for backwards compatibility if
+        # someone inspects the variable but not required here.
+        # num_patches = self.patch_embed.num_patches
         self.use_class_token = use_class_token
         # positional embeddings are registered lazily; the actual number of
         # tokens may not be known until the first forward if img_size was
@@ -376,10 +378,6 @@ class ViTMoE(nn.Module):
         new positional embeddings are initialized from a normal distribution
         with the same std used in the constructor.
         """
-        if self.use_class_token:
-            num_patches = seq_len - 1
-        else:
-            num_patches = seq_len
         # create new parameter on the same device as existing weights
         device = None
         for p in self.parameters():
@@ -401,6 +399,8 @@ class ViTMoE(nn.Module):
         if self.pos_embed is None or self.pos_embed.size(1) != seq_len:
             # we know embed_dim from x
             self._init_pos_embed(seq_len, x.size(2))
+        # at this point pos_embed cannot be None (initialized above)
+        assert self.pos_embed is not None
         x = x + self.pos_embed
         x = self.pos_drop(x)
         for blk in self.blocks:

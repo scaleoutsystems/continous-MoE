@@ -93,12 +93,13 @@
   },
 
   // --------------------------------------------------------------------
-  // Scheduler
-  "scheduler": {
-    "name": null, // "cosine" for CosineAnnealingLR or null currently
+  // Scheduler (optional)
+  // "scheduler": {
+  //   "name": null 
+    // "cosine" for CosineAnnealingLR
     // Used for CosineAnnealing; if null, uses epochs_per_domain as T_max
     //"T_max": null
-  },
+  // },
 
   "epochs_per_domain": 5,
 

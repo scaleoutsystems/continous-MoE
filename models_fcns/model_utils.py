@@ -1,6 +1,6 @@
 import torch.nn as nn
 import torchvision
-from typing import Dict
+from typing import Dict, cast
 
 # import the custom MoE ViT factory if available
 try:
@@ -44,8 +44,9 @@ def create_model(config: Dict):
                 first = model.features[0]
                 # Conv2dNormActivation stores the conv as first[0]
                 if isinstance(first, nn.Sequential) and len(first) > 0 and isinstance(first[0], nn.Conv2d):
-                    in_ch = first[0].in_channels
-                    out_ch = first[0].out_channels
+                    # first[0] is a Conv2d, but explicit cast here for type checker
+                    in_ch = cast(int, first[0].in_channels)
+                    out_ch = cast(int, first[0].out_channels)
                     model.features[0][0] = nn.Conv2d(in_ch, out_ch,
                                                       kernel_size=3, stride=1, padding=1,
                                                       bias=False)
