@@ -35,8 +35,8 @@
 
     "type": "dirichlet",
     "alpha": 0.3,
-    "min_size": 10,
-    "balanced": false
+    "min_size": 700,
+    "balanced": true
   },
 
   "train_frac": 0.8,
@@ -84,7 +84,7 @@
     "name": "focal", // options: "cross_entropy", "weighted_cross_entropy", "focal"
     "lr": 0.001,
     // set to true to enable per-class weighting based on partition distribution
-    "weighted": false,
+    "weighted": true,
     // upper limit applied when computing inverse-frequency weights
     "weight_upper_limit": 20.0,
     // if true new weights will be averaged with the previous set
@@ -96,7 +96,7 @@
     // from the current partition's class counts, identical to the behaviour
     // of the weighted cross-entropy loss.
 
-    "alpha": null,
+    "alpha": "auto",
     "gamma": 2.0
   },
 

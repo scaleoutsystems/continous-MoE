@@ -35,8 +35,8 @@
 
     "type": "dirichlet",
     "alpha": 0.3,
-    "min_size": 10,
-    "balanced": false
+    "min_size": 700,
+    "balanced": true
   },
 
   "train_frac": 0.8,
@@ -81,7 +81,7 @@
   // --------------------------------------------------------------------
   // Loss and learning rate
   "loss": {
-    "name": "weighted_cross_entropy", // options: "cross_entropy", "weighted_cross_entropy", "focal"
+    "name": "focal", // options: "cross_entropy", "weighted_cross_entropy", "focal"
     "lr": 0.001,
     // set to true to enable per-class weighting based on partition distribution
     "weighted": true,

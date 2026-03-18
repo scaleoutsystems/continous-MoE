@@ -78,8 +78,8 @@ def load_config(path: str) -> Dict[str, Any]:
     dataset_seed = _norm(seeds.get("dataset", global_seed))
     model_seed = _norm(seeds.get("model", global_seed))
     training_seed = _norm(seeds.get("training", global_seed))
-    pretrain_seed = _norm(seeds.get("pretrain", global_seed))
-    replay_seed = _norm(seeds.get("replay", global_seed))
+    # pretrain_seed = _norm(seeds.get("pretrain", global_seed))
+    # replay_seed = _norm(seeds.get("replay", global_seed))
 
     # apply global seed if requested; per-stage code (e.g. dataset loader)
     # will consider the other values separately.
