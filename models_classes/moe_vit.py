@@ -17,7 +17,7 @@ Notes:
 - This is a straightforward, easy-to-read MoE implementation (sparse dispatch by default).
   It performs sparse dispatch (only selected experts are executed per-sample) and is
   intended for research/debugging rather than large-scale production efficiency.
-- The training function supports `router_freeze_after_batches` via kwargs.
+- The training function supports `router_freeze_after_epochs` via kwargs.
 """
 from typing import List, Optional, Union
 

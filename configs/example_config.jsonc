@@ -44,20 +44,6 @@
   "shuffle": true,
 
   // --------------------------------------------------------------------
-  // Pretraining / replay options
-  "pretrain": {
-    "enabled": false,
-    "num_samples": 0,
-    "with_replacement": false
-  },
-
-  "replay": {
-    "enabled": false,
-    "capacity": 1000,
-    "policy": "fifo"        // "fifo" or "random"
-  },
-
-  // --------------------------------------------------------------------
   // Model configuration
   "model": {
     "name": "vit_moe", // "convnext_tiny", "resnet18", "vit_moe"
@@ -67,7 +53,7 @@
     // training batch.  You may override it here if you know the input
     // resolution in advance; otherwise leave it unspecified.
     // "img_size": 224,
-    "patch_size": 16,
+    "patch_size": 8,
     // If using vit_moe, you may specify additional keys for the MoE.
     // Configuration separates the number of unshared and shared experts
     // explicitly
@@ -116,18 +102,31 @@
     //"T_max": null
   // },
 
-  "epochs_per_domain": 5,
+  "pretrain": {
+    "enabled": true,
+    "num_samples": 2000,
+    "with_replacement": false
+  },
+
+  "pretrain_scheduler": {
+    "name": null // e.g. "cosine" or "step"
+    // "T_max": null
+    // "step_size": 10
+    // "gamma": 0.1
+  },
+
+  "epochs_per_domain": 1,
 
   // --------------------------------------------------------------------
   // Continual learning options
   "router_balancing": true,
   "router_balance_strength": 0.5,
-  "router_freeze_after_batches": 8,
+  "router_freeze_after_epochs": 1,
   // set to a value <1 to slow router learning; 0 is equivalent to freezing
   "router_lr_multiplier": 0.0,
-  // optionally change the multiplier at a particular batch (useful for
+  // optionally change the multiplier at a particular epoch (useful for
   // scheduling); null means never change midrun
-  "router_lr_multiplier_after_batches": null,
+  "router_lr_multiplier_after_epochs": null,
 
   // --------------------------------------------------------------------
   // Baseline reference (enable to compute FWT/intransigence)

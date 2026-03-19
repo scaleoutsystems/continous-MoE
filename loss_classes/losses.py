@@ -119,7 +119,9 @@ class FocalLoss(nn.Module):
         alpha_factor = self.alpha
         # if per-class alpha tensor, gather values for each target
         if isinstance(self.alpha, torch.Tensor) and self.alpha.numel() == self.num_classes:
-            alpha_factor = self.alpha[target]
+            alpha_factor = self.alpha.to(input.device)[target]
+        else:
+            alpha_factor = torch.tensor(self.alpha, device=input.device) if isinstance(self.alpha, (float, int)) else self.alpha
         loss = alpha_factor * ((1 - pt) ** self.gamma) * ce
         return loss.mean()
 

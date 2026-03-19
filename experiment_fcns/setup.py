@@ -187,17 +187,25 @@ def load_config(path: str) -> Dict[str, Any]:
     else:
         raise ValueError(f"Unsupported optimizer {opt_cfg['name']}")
 
-    # scheduler
-    sch_cfg = cfg.get("scheduler", {})
-    sch_name = sch_cfg.get("name", {})
-    scheduler = None
-    if sch_name is not None:
-        if sch_name == "cosine":
-            T_max = epochs_per_domain if sch_cfg.get("T_max", None) is (None or 0) else sch_cfg.get("T_max")
-            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-                optimizer, T_max=T_max)
-        else:
-            print(f"Warning: unknown scheduler {sch_cfg.get('name')} -- skipping")
+    # scheduler helpers
+    def _make_scheduler(optimizer, sch_cfg, epochs_per_domain):
+        if not sch_cfg or sch_cfg.get("name") is None:
+            return None
+        name = sch_cfg.get("name").lower()
+        if name == "cosine":
+            T_max = sch_cfg.get("T_max", epochs_per_domain)
+            if T_max is None or T_max == 0:
+                T_max = epochs_per_domain
+            return torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=T_max)
+        if name == "step":
+            step_size = sch_cfg.get("step_size", 10)
+            gamma = sch_cfg.get("gamma", 0.1)
+            return torch.optim.lr_scheduler.StepLR(optimizer, step_size=step_size, gamma=gamma)
+        print(f"Warning: unknown scheduler {sch_cfg.get('name')} -- skipping")
+        return None
+
+    scheduler = _make_scheduler(optimizer, cfg.get("scheduler", {}), epochs_per_domain)
+    pretrain_scheduler = _make_scheduler(optimizer, cfg.get("pretrain_scheduler", {}), epochs_per_domain)
 
     # loss
     loss_cfg = cfg.get("loss", {"name": "cross_entropy"})
@@ -250,6 +258,7 @@ def load_config(path: str) -> Dict[str, Any]:
         "model": model,
         "optimizer": optimizer,
         "scheduler": scheduler,
+        "pretrain_scheduler": pretrain_scheduler,
         "criterion": criterion,
         "device": device,
     }

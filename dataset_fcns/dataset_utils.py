@@ -11,6 +11,111 @@ from torchvision import transforms
 import matplotlib.pyplot as plt
 
 
+class SubsetWithTransform(torch.utils.data.Dataset):
+    """Subset wrapper that applies an extra transform to each sample."""
+
+    def __init__(self, subset, extra_transform=None):
+        self.subset = subset
+        self.extra_transform = extra_transform
+
+    def __len__(self):
+        return len(self.subset)
+
+    def __getitem__(self, idx):
+        x, y = self.subset[idx]
+        if self.extra_transform is not None:
+            x = self.extra_transform(x)
+        return x, y
+
+
+class AddGaussianNoise(object):
+    def __init__(self, mean=0.0, std=0.01):
+        self.mean = mean
+        self.std = std
+
+    def __call__(self, tensor):
+        return tensor + torch.randn_like(tensor) * self.std + self.mean
+
+    def __repr__(self):
+        return f"{self.__class__.__name__}(mean={self.mean}, std={self.std})"
+
+
+def compute_mean_std(dataset, batch_size=256, num_workers=0):
+    """Compute per-channel mean and std for a data subset."""
+    loader = DataLoader(dataset, batch_size=batch_size, shuffle=False,
+                        num_workers=num_workers, pin_memory=True)
+    n_samples = 0
+    mean = torch.zeros(3)
+    m2 = torch.zeros(3)
+
+    for x, _ in loader:
+        x = x.float()
+        batch_samples = x.size(0)
+        x = x.view(batch_samples, x.size(1), -1)
+        batch_mean = x.mean(2).sum(0)
+        batch_var = x.var(2, unbiased=False).sum(0)
+
+        mean += batch_mean
+        m2 += batch_var
+        n_samples += batch_samples
+
+    if n_samples == 0:
+        return [0.5, 0.5, 0.5], [0.5, 0.5, 0.5]
+
+    mean = mean / n_samples
+    var = m2 / n_samples
+    std = torch.sqrt(var)
+    return mean.tolist(), std.tolist()
+
+
+def build_augmentation_transform(config):
+    """Create a transform pipeline for train/pretrain augmentation."""
+    augmentation_cfg = config.get("augmentation", {}) if config is not None else {}
+    ops = []
+
+    if augmentation_cfg.get("random_resize_crop", False):
+        size = config.get("resize", 32)
+        ops.append(transforms.RandomResizedCrop(size, scale=(0.8, 1.0), ratio=(0.9, 1.1)))
+
+    if augmentation_cfg.get("random_flip", False):
+        ops.append(transforms.RandomHorizontalFlip())
+
+    if augmentation_cfg.get("color_jitter", False):
+        ops.append(transforms.ColorJitter(brightness=0.2, contrast=0.2,
+                                          saturation=0.2, hue=0.05))
+
+    if augmentation_cfg.get("blur", False):
+        ops.append(transforms.GaussianBlur(kernel_size=(3, 3), sigma=(0.1, 2.0)))
+
+    if augmentation_cfg.get("noise", False):
+        ops.append(AddGaussianNoise(mean=0.0, std=0.01))
+
+    if ops:
+        return transforms.Compose(ops)
+    else:
+        return None
+
+
+def _clone_dataloader_with_dataset(source_loader, dataset):
+    # PyTorch DataLoader may not expose shuffle attribute directly.
+    from torch.utils.data import RandomSampler
+    shuffle = False
+    try:
+        shuffle = isinstance(source_loader.sampler, RandomSampler)
+    except Exception:
+        shuffle = False
+
+    return DataLoader(dataset,
+                      batch_size=source_loader.batch_size,
+                      shuffle=shuffle,
+                      sampler=None,
+                      num_workers=source_loader.num_workers,
+                      pin_memory=getattr(source_loader, 'pin_memory', False),
+                      prefetch_factor=getattr(source_loader, 'prefetch_factor', 2),
+                      drop_last=getattr(source_loader, 'drop_last', False),
+                      timeout=getattr(source_loader, 'timeout', 0))
+
+
 def ensure_cifar10(root: str, download: bool = True):
     """Download CIFAR-10 dataset if not already present."""
     if not os.path.exists(os.path.join(root, 'cifar-10-batches-py')):
@@ -376,7 +481,8 @@ def create_dataloaders(config: Dict) -> Dict:
             pre_indices = random.sample(all_indices, min(num_pre, len(all_indices)))
             pre_subset = Subset(dataset, pre_indices)
             pretrain_loader = DataLoader(pre_subset, batch_size=batch_size,
-                                         shuffle=True, num_workers=4, pin_memory=True)
+                                         shuffle=True, num_workers=4, pin_memory=True,
+                                         prefetch_factor=2)
             # optionally remove pretrain samples from future training set
             if not pretrain_cfg.get("with_replacement", False):
                 # remove those samples from each partition loader
@@ -390,6 +496,49 @@ def create_dataloaders(config: Dict) -> Dict:
                     shuffle=shuffle,
                     seed=loader_seed,
                 )
+
+    # Input normalisation and augmentation
+    # train+pretrain are combined for normalization statistics
+    train_idx = []
+    for loader in train_loaders:
+        ds = loader.dataset
+        if hasattr(ds, 'indices'):
+            train_idx.extend(list(ds.indices))
+    if pretrain_loader is not None and hasattr(pretrain_loader.dataset, 'indices'):
+        train_idx.extend(list(pretrain_loader.dataset.indices))
+
+    if train_idx:
+        train_stats = compute_mean_std(Subset(dataset, train_idx), batch_size=batch_size, num_workers=0)
+    else:
+        train_stats = ([0.5, 0.5, 0.5], [0.5, 0.5, 0.5])
+    train_mean, train_std = train_stats
+
+    augmentation_ops = build_augmentation_transform(config)
+    if augmentation_ops is not None:
+        train_transform = transforms.Compose([augmentation_ops, transforms.Normalize(train_mean, train_std)])
+    else:
+        train_transform = transforms.Normalize(train_mean, train_std)
+
+    def _wrap_loader(loader, transform):
+        wrapped_ds = SubsetWithTransform(loader.dataset, extra_transform=transform)
+        return _clone_dataloader_with_dataset(loader, wrapped_ds)
+
+    train_loaders = [_wrap_loader(l, train_transform) for l in train_loaders]
+
+    test_loaders_out = []
+    for loader in test_loaders:
+        ds = loader.dataset
+        if hasattr(ds, 'indices') and len(ds.indices) > 0:
+            mean, std = compute_mean_std(ds, batch_size=batch_size, num_workers=0)
+        else:
+            mean, std = [0.5, 0.5, 0.5], [0.5, 0.5, 0.5]
+        test_transform = transforms.Normalize(mean, std)
+        wrapped_ds = SubsetWithTransform(ds, extra_transform=test_transform)
+        test_loaders_out.append(_clone_dataloader_with_dataset(loader, wrapped_ds))
+    test_loaders = test_loaders_out
+
+    if pretrain_loader is not None:
+        pretrain_loader = _wrap_loader(pretrain_loader, train_transform)
 
     return {
         "dataset": dataset,

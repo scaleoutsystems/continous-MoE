@@ -29,7 +29,7 @@ Key fields in the config file include:
 * `model` – name (e.g. `convnext_tiny`, `vit_moe`) and model-specific settings.
 * `optimizer`, `scheduler`, `loss` – training settings.
 * `epochs_per_domain` – number of epochs to run on each partition/domain.
-* `replay`, `router_balancing`, `router_freeze_after_batches` – continual learning options.
+* `replay`, `router_balancing`, `router_freeze_after_epochs` – continual learning options.
 
 ### Running an Experiment
 

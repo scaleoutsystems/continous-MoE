@@ -1,3 +1,4 @@
+import os
 import torch
 import numpy as np
 from pathlib import Path
@@ -186,7 +187,14 @@ class DIL_Logger:
         now = datetime.now()
         stamp = now.strftime("%m%d%H%M")
         fname = f"{model_name}_{dataset_name}_{stamp}.pt"
-        outpath = self.save_dir / fname
+
+        out_dir = self.save_dir
+        if hasattr(self, 'config_file') and self.config_file:
+            cfg_name = os.path.splitext(os.path.basename(self.config_file))[0]
+            out_dir = out_dir / cfg_name
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        outpath = out_dir / fname
 
         save_dict = {
             "metadata": meta,
