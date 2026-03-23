@@ -191,7 +191,12 @@ def load_config(path: str) -> Dict[str, Any]:
     def _make_scheduler(optimizer, sch_cfg, epochs_per_domain):
         if not sch_cfg or sch_cfg.get("name") is None:
             return None
-        name = sch_cfg.get("name").lower()
+
+        name = sch_cfg.get("name")
+        if name is None:
+            return None
+
+        name = name.lower()
         if name == "cosine":
             T_max = sch_cfg.get("T_max", epochs_per_domain)
             if T_max is None or T_max == 0:
@@ -201,11 +206,26 @@ def load_config(path: str) -> Dict[str, Any]:
             step_size = sch_cfg.get("step_size", 10)
             gamma = sch_cfg.get("gamma", 0.1)
             return torch.optim.lr_scheduler.StepLR(optimizer, step_size=step_size, gamma=gamma)
+        if name == "linear":
+            start_factor = sch_cfg.get("start_factor", 0.1)
+            end_factor = sch_cfg.get("end_factor", 1.0)
+            total_iters = sch_cfg.get("total_iters", epochs_per_domain)
+            return torch.optim.lr_scheduler.LinearLR(
+                optimizer,
+                start_factor=start_factor,
+                end_factor=end_factor,
+                total_iters=total_iters,
+            )
+
         print(f"Warning: unknown scheduler {sch_cfg.get('name')} -- skipping")
         return None
 
     scheduler = _make_scheduler(optimizer, cfg.get("scheduler", {}), epochs_per_domain)
-    pretrain_scheduler = _make_scheduler(optimizer, cfg.get("pretrain_scheduler", {}), epochs_per_domain)
+    pretrain_scheduler = _make_scheduler(
+        optimizer,
+        cfg.get("pretrain_scheduler", {}),
+        epochs_per_domain,
+    )
 
     # loss
     loss_cfg = cfg.get("loss", {"name": "cross_entropy"})

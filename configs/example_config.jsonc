@@ -109,10 +109,9 @@
   },
 
   "pretrain_scheduler": {
-    "name": null // e.g. "cosine" or "step"
-    // "T_max": null
-    // "step_size": 10
-    // "gamma": 0.1
+    "name": "linear", // e.g. "cosine", "step", "linear"
+    "start_factor": 0.1,
+    "end_factor": 1.0
   },
 
   "epochs_per_domain": 1,
