@@ -17,8 +17,17 @@
   // Dataset specification
   "dataset": "cifar10",
   "dataset_root": "./datasets",
-  "mini_dataset": 10000,                // integer sample count or null for full
-  "resize": 0, // 0 = no resize
+  "mini_dataset": 12000,                // integer sample count or null for full
+  "resize": 0, // 0 = no resize. This resize affects all images
+
+  "augmentation": {
+    "random_resize_crop": false,
+    "resize": null,
+    "random_flip": true,
+    "color_jitter": true,
+    "blur": true,
+    "noise": true
+  },
 
   // --------------------------------------------------------------------
   // Partitioning (pick one of these blocks)
@@ -53,7 +62,7 @@
     // training batch.  You may override it here if you know the input
     // resolution in advance; otherwise leave it unspecified.
     // "img_size": 224,
-    "patch_size": 16,
+    "patch_size": 8,
     // If using vit_moe, you may specify additional keys for the MoE.
     // Configuration separates the number of unshared and shared experts
     // explicitly
@@ -109,18 +118,18 @@
   },
 
   "pretrain_scheduler": {
-    "name": "linear",
+    "name": "linear", // e.g. "cosine", "step", "linear"
     "start_factor": 0.1,
     "end_factor": 1.0
   },
 
-  "epochs_per_domain": 5,
+  "epochs_per_domain": 1,
 
   // --------------------------------------------------------------------
   // Continual learning options
   "router_balancing": true,
   "router_balance_strength": 0.5,
-  "router_freeze_after_epochs": 8,
+  "router_freeze_after_epochs": 1,
   // set to a value <1 to slow router learning; 0 is equivalent to freezing
   "router_lr_multiplier": 0.0,
   // optionally change the multiplier at a particular epoch (useful for
@@ -130,8 +139,8 @@
   // --------------------------------------------------------------------
   // Baseline reference (enable to compute FWT/intransigence)
   "baseline": {
-    "enabled": false,
-    "train": false,
+    "enabled": true,
+    "train": true,
     "accuracies": null
   }
 }

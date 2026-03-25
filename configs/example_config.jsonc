@@ -17,8 +17,17 @@
   // Dataset specification
   "dataset": "cifar10",
   "dataset_root": "./datasets",
-  "mini_dataset": 10000,                // integer sample count or null for full
-  "resize": 0, // 0 = no resize
+  "mini_dataset": 12000,                // integer sample count or null for full
+  "resize": 0, // 0 = no resize. This resize affects all images
+
+  "augmentation": {
+    "random_resize_crop": false,
+    "resize": null,
+    "random_flip": true,
+    "color_jitter": true,
+    "blur": true,
+    "noise": true
+  },
 
   // --------------------------------------------------------------------
   // Partitioning (pick one of these blocks)
@@ -130,8 +139,8 @@
   // --------------------------------------------------------------------
   // Baseline reference (enable to compute FWT/intransigence)
   "baseline": {
-    "enabled": false,
-    "train": false,
+    "enabled": true,
+    "train": true,
     "accuracies": null
   }
 }
