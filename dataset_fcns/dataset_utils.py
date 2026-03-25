@@ -487,6 +487,11 @@ def create_dataloaders(config: Dict) -> Dict:
             indices_lists = static_split(available_indices, num_parts, seed=partition_seed)
         p_type = "random" if num_parts == 1 else "static"
 
+    # Modify train_frac to account for pretrain reduction in samples
+    if pretrain_cfg.get("enabled", False) and config.get("pretrain", {}).get("num_samples", 0) > 0:
+        train_frac = train_frac - (config.get("pretrain", {}).get("num_samples", 0) / len(dataset))
+
+
     train_loaders, test_loaders = create_train_test_loaders(
         dataset,
         indices_lists,
