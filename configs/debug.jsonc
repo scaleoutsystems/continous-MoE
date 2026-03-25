@@ -17,7 +17,7 @@
   // Dataset specification
   "dataset": "cifar10",
   "dataset_root": "./datasets",
-  "mini_dataset": 12000,                // integer sample count or null for full
+  "mini_dataset": 1000,                // integer sample count or null for full
   "resize": 0, // 0 = no resize. This resize affects all images
 
   "augmentation": {
@@ -44,7 +44,7 @@
 
     "type": "dirichlet",
     "alpha": 0.3,
-    "min_size": 700,
+    "min_size": 10,
     "balanced": true
   },
 
@@ -113,7 +113,7 @@
 
   "pretrain": {
     "enabled": true,
-    "num_samples": 2000,
+    "num_samples": 200,
     "with_replacement": false
   },
 

@@ -423,43 +423,69 @@ def create_dataloaders(config: Dict) -> Dict:
     else:
         raise ValueError(f"Unsupported dataset {name}")
 
-    # partitioning
-    num_parts = config.get("num_partitions", 1)
-    partition_params = config.get("partition", {})
-    p_type = partition_params.get("type", "random")
-    if p_type == "dirichlet":
-        alpha = partition_params.get("alpha", 0.5)
-        min_size = partition_params.get("min_size", 1)
-        balanced = partition_params.get("balanced", False)
-        # obtain the list of labels corresponding to the current dataset
-        if isinstance(dataset, Subset):
-            # Subset may wrap a larger dataset; we need labels only for the
-            # indices retained in the subset to avoid out-of-bounds partitioning.
-            targets = [dataset[i][1] for i in range(len(dataset))]  # type: ignore
-        elif hasattr(dataset, 'targets'):
-            targets = dataset.targets  # type: ignore
-        else:
-            # general fallback (should rarely be reached)
-            targets = [dataset[i][1] for i in range(len(dataset))]  # type: ignore
-        indices_lists = dirichlet_split(targets,
-                                        num_partitions=num_parts,
-                                        alpha=alpha,
-                                        min_size=min_size,
-                                        balanced=balanced,
-                                        seed=partition_seed)
-    elif p_type == "static":
-        indices = list(range(len(dataset)))
-        indices_lists = static_split(indices, num_parts, seed=partition_seed)
-    else:  # random or single loader
-        if num_parts == 1:
-            indices_lists = [list(range(len(dataset)))]
-        else:
-            indices_lists = static_split(list(range(len(dataset))), num_parts, seed=partition_seed)
-        p_type = "random" if num_parts == 1 else "static"
+    # pretraining first: sample from the full dataset
+    all_indices = list(range(len(dataset)))
+    pretrain_loader = None
+    pretrain_indices = []
+    pretrain_cfg = config.get("pretrain", {})
+    num_pre = pretrain_cfg.get("num_samples", 0)
+    with_replacement = pretrain_cfg.get("with_replacement", False)
 
     train_frac = config.get("train_frac", 0.8)
     batch_size = config.get("batch_size", 128)
     shuffle = config.get("shuffle", True)
+
+    if pretrain_cfg.get("enabled", False) and num_pre > 0:
+        random.seed(pretrain_seed)
+        if with_replacement:
+            pretrain_indices = random.choices(all_indices, k=min(num_pre, len(all_indices)))
+        else:
+            pretrain_indices = random.sample(all_indices, min(num_pre, len(all_indices)))
+
+        pre_subset = Subset(dataset, pretrain_indices)
+        pretrain_loader = DataLoader(pre_subset, batch_size=batch_size,
+                                     shuffle=True, num_workers=4, pin_memory=True,
+                                     prefetch_factor=2)
+
+    if not with_replacement:
+        pretrain_set = set(pretrain_indices)
+        available_indices = [idx for idx in all_indices if idx not in pretrain_set]
+    else:
+        available_indices = all_indices
+
+    # partitioning leftover data (after pretrain exclusion when without replacement)
+    num_parts = config.get("num_partitions", 1)
+    partition_params = config.get("partition", {})
+    p_type = partition_params.get("type", "random")
+
+    if p_type == "dirichlet":
+        alpha = partition_params.get("alpha", 0.5)
+        min_size = partition_params.get("min_size", 1)
+        balanced = partition_params.get("balanced", False)
+
+        if hasattr(dataset, 'targets'):
+            available_targets = [dataset.targets[idx] for idx in available_indices]
+        else:
+            available_targets = [dataset[idx][1] for idx in available_indices]
+
+        raw_partitions = dirichlet_split(
+            available_targets,
+            num_partitions=num_parts,
+            alpha=alpha,
+            min_size=min_size,
+            balanced=balanced,
+            seed=partition_seed,
+        )
+        indices_lists = [[available_indices[j] for j in part] for part in raw_partitions]
+
+    elif p_type == "static":
+        indices_lists = static_split(available_indices, num_parts, seed=partition_seed)
+    else:  # random or single loader
+        if num_parts == 1:
+            indices_lists = [available_indices.copy()]
+        else:
+            indices_lists = static_split(available_indices, num_parts, seed=partition_seed)
+        p_type = "random" if num_parts == 1 else "static"
 
     train_loaders, test_loaders = create_train_test_loaders(
         dataset,
@@ -470,32 +496,47 @@ def create_dataloaders(config: Dict) -> Dict:
         seed=loader_seed,
     )
 
-    pretrain_loader = None
-    pretrain_cfg = config.get("pretrain", {})
-    if pretrain_cfg.get("enabled", False):
-        num_pre = pretrain_cfg.get("num_samples", 0)
-        if num_pre > 0:
-            # draw samples from the *train* portion of the full dataset
-            all_indices = list(range(len(dataset)))
-            random.seed(pretrain_seed)
-            pre_indices = random.sample(all_indices, min(num_pre, len(all_indices)))
-            pre_subset = Subset(dataset, pre_indices)
-            pretrain_loader = DataLoader(pre_subset, batch_size=batch_size,
-                                         shuffle=True, num_workers=4, pin_memory=True,
-                                         prefetch_factor=2)
-            # optionally remove pretrain samples from future training set
-            if not pretrain_cfg.get("with_replacement", False):
-                # remove those samples from each partition loader
-                for i, part in enumerate(indices_lists):
-                    indices_lists[i] = [idx for idx in part if idx not in pre_indices]
-                train_loaders, test_loaders = create_train_test_loaders(
-                    dataset,
-                    indices_lists,
-                    train_frac=train_frac,
-                    batch_size=batch_size,
-                    shuffle=shuffle,
-                    seed=loader_seed,
-                )
+    # compute class distributions from the available indices (and pretrain indices)
+    num_classes = config.get("model", {}).get("num_classes")
+    if num_classes is None:
+        if hasattr(dataset, 'classes'):
+            num_classes = len(dataset.classes)
+        else:
+            num_classes = int(max(getattr(dataset, 'targets', [0])) + 1) if len(getattr(dataset, 'targets', [])) > 0 else 0
+
+    def _get_label(idx):
+        if hasattr(dataset, 'targets'):
+            return int(dataset.targets[idx])
+        return int(dataset[idx][1])
+
+    def _compute_class_counts(indices):
+        if len(indices) == 0:
+            return [0] * num_classes
+        lbls = [_get_label(idx) for idx in indices]
+        counts = np.bincount(np.array(lbls, dtype=np.int64), minlength=num_classes)
+        return counts.tolist()
+
+    partition_class_dist = [_compute_class_counts(part) for part in indices_lists]
+    train_class_dist = []
+    test_class_dist = []
+    for loader in train_loaders:
+        if hasattr(loader.dataset, 'indices'):
+            train_class_dist.append(_compute_class_counts(list(loader.dataset.indices)))
+        else:
+            train_class_dist.append([0] * num_classes)
+    for loader in test_loaders:
+        if hasattr(loader.dataset, 'indices'):
+            test_class_dist.append(_compute_class_counts(list(loader.dataset.indices)))
+        else:
+            test_class_dist.append([0] * num_classes)
+
+    partition_distributions = {
+        'pretrain': _compute_class_counts(pretrain_indices) if pretrain_indices else None,
+        'partition': partition_class_dist,
+        'train': train_class_dist,
+        'test': test_class_dist,
+        'num_classes': num_classes,
+    }
 
     # Input normalisation and augmentation
     # train+pretrain are combined for normalization statistics
@@ -548,10 +589,11 @@ def create_dataloaders(config: Dict) -> Dict:
         "partition_type": p_type,
         "train_frac": train_frac,
         "batch_size": batch_size,
+        "partition_distributions": partition_distributions,
     }
 
 
-def plot_partition_distributions(train_loaders, test_loaders, num_classes=10, class_names=None):
+def plot_partition_distributions(train_loaders=None, test_loaders=None, num_classes=10, class_names=None, class_distributions=None):
     """Visualize class counts per partition (train/test/overall).
 
     This helper avoids iterating DataLoader objects directly since worker
@@ -559,7 +601,55 @@ def plot_partition_distributions(train_loaders, test_loaders, num_classes=10, cl
     straddles the boundary.  Instead we inspect each loader's underlying
     ``Subset`` indices and fetch labels from the base dataset.
     """
+    if class_names is None:
+        class_names = [str(i) for i in range(num_classes)]
 
+    if class_distributions is not None:
+        train_counts_list = class_distributions.get('train', [])
+        test_counts_list = class_distributions.get('test', [])
+        pretrain_counts = class_distributions.get('pretrain')
+
+        num_partitions = len(train_counts_list)
+        if num_partitions > 0:
+            fig, axes = plt.subplots(3, num_partitions, figsize=(4*num_partitions, 12))
+            if num_partitions == 1:
+                axes = axes.reshape(3, 1)
+
+            for i in range(num_partitions):
+                train_counts = np.array(train_counts_list[i], dtype=float)
+                test_counts = np.array(test_counts_list[i], dtype=float)
+                overall_counts = train_counts + test_counts
+                max_y = max(overall_counts.max() * 1.1, 1.0)
+
+                axes[0, i].bar(class_names, train_counts, color='skyblue')
+                axes[0, i].set_title(f"Partition {i} Train")
+                axes[0, i].set_ylim(0, max_y)
+
+                axes[1, i].bar(class_names, test_counts, color='lightgreen')
+                axes[1, i].set_title(f"Partition {i} Test")
+                axes[1, i].set_ylim(0, max_y)
+
+                axes[2, i].bar(class_names, overall_counts, color='salmon')
+                axes[2, i].set_title(f"Partition {i} Overall")
+                axes[2, i].set_ylim(0, max_y)
+
+                for ax in axes[:, i]:
+                    ax.set_xlabel("Class")
+                    ax.set_ylabel("Count")
+
+            plt.tight_layout()
+            plt.show()
+
+        if pretrain_counts is not None:
+            fig_p, ax_p = plt.subplots(1, 1, figsize=(8, 4))
+            ax_p.bar(class_names, pretrain_counts, color='mediumpurple')
+            ax_p.set_title("Pretrain class distribution")
+            ax_p.set_xlabel("Class")
+            ax_p.set_ylabel("Count")
+            plt.tight_layout()
+            plt.show()
+
+        return
     num_partitions = len(train_loaders)
     fig, axes = plt.subplots(3, num_partitions, figsize=(4*num_partitions, 12))
     if class_names is None:
@@ -573,6 +663,7 @@ def plot_partition_distributions(train_loaders, test_loaders, num_classes=10, cl
             inds = ds.indices
             base = ds.dataset
         else:
+            IndexError("Should not index during plotting")
             # fallback: iterate once (should not happen)
             labels = []
             for _, lab in loader:

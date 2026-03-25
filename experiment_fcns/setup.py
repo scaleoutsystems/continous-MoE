@@ -98,6 +98,7 @@ def load_config(path: str) -> Dict[str, Any]:
     train_loaders = data_objs["train_loaders"]
     test_loaders = data_objs["test_loaders"]
     pretrain_loader = data_objs.get("pretrain_loader", None)
+    partition_distributions = data_objs.get("partition_distributions", None)
 
     # determine image size from the dataset if possible and store in the
     # model config so factories can adjust architectures automatically.
@@ -273,6 +274,7 @@ def load_config(path: str) -> Dict[str, Any]:
         "train_loaders": train_loaders,
         "test_loaders": test_loaders,
         "pretrain_loader": pretrain_loader,
+        "partition_distributions": partition_distributions,
         "train_frac": data_objs.get("train_frac"),
         "batch_size": data_objs.get("batch_size"),
         "model": model,
