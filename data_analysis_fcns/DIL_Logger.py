@@ -22,6 +22,9 @@ class DIL_Logger:
 
         # hold confusion matrices for every finalized domain
         self.confusions = []
+        # confusion matrix after pretraining (single matrix) and for baseline models
+        self.pretrain_confusion = []
+        self.baseline_confusions = []
         # keep all intermediate R matrices (after each compute_metrics call)
         self.R_history = []
 
@@ -106,15 +109,27 @@ class DIL_Logger:
             forgetting = 0.0
             bwt = 0.0
 
-        # Forward Transfer (FWT): mean of off-diagonal
+        # Forward Transfer (FWT): compute per-epoch using R_temp as stand-in for final R
         fwt = None
         if self.baseline is not None and i > 0:
-            fwt = np.mean([
-                self.R_final[j][j + 1] - self.baseline[j + 1]
-                for j in range(i)
-            ])
+            vals = []
+            for j in range(i):
+                # R_temp may contain NaNs for unseen entries; guard access
+                try:
+                    r_val = R_temp[j][j + 1]
+                except Exception:
+                    r_val = np.nan
+                # baseline should be a list/array with per-domain accuracies
+                try:
+                    baseline_val = self.baseline[j + 1]
+                except Exception:
+                    baseline_val = None
+                if baseline_val is None:
+                    continue
+                vals.append(r_val - baseline_val)
+            fwt = float(np.nanmean(vals)) if len(vals) > 0 else None
 
-        # Intransigence
+        # Intransience
         intrans = None
         if self.baseline is not None:
             intrans = self.baseline[i] - domain_acc[i]
@@ -129,7 +144,7 @@ class DIL_Logger:
             "forgetting": float(forgetting),
             "bwt": float(bwt),
             "fwt": None if fwt is None else float(fwt),
-            "intransigence": None if intrans is None else float(intrans),
+            "intransience": None if intrans is None else float(intrans),
             "domain_acc_vector": domain_acc.tolist(),
         }
 
@@ -204,6 +219,10 @@ class DIL_Logger:
             # convert confusions to cpu tensors for portability
             "confusion_matrices": [c.cpu() if torch.is_tensor(c) else c
                                    for c in self.confusions],
+            # pretrain confusion (single matrix) and baseline (per-domain) confusions
+            "pretrain_confusion": (self.pretrain_confusion.cpu() if torch.is_tensor(self.pretrain_confusion) else self.pretrain_confusion),
+            "baseline_confusion_matrices": [c.cpu() if torch.is_tensor(c) else c
+                                           for c in self.baseline_confusions],
         }
         torch.save(save_dict, outpath)
 

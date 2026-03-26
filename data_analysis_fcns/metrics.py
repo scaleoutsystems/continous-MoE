@@ -11,7 +11,7 @@ def compute_continual_metrics(test_history: list, reference: dict = None) -> Dic
     - test_history: list of test-result dicts produced by the project's `test` helpers.
     - reference: optional. If provided, should be either a `test_history`-style list
       or a dict containing an `R` entry (accuracy matrix). When `reference` is
-      supplied the function will also compute Intransigence (IM) and Forward Transfer (FWT).
+      supplied the function will also compute Intransience (IM) and Forward Transfer (FWT).
 
     Notes / definitions used here (explicit so behaviour is deterministic):
     - R (accuracy matrix): R[i, j] = accuracy on task j after learning step i.
@@ -19,7 +19,7 @@ def compute_continual_metrics(test_history: list, reference: dict = None) -> Dic
       when `test_history` is available).
     - BWT / FM: backward transfer and forgetting computed from R (always returned
       when possible).
-    - IM (Intransigence): computed only when a `reference` is provided. IM =
+    - IM (Intransience): computed only when a `reference` is provided. IM =
       mean_j (ref_final_acc[j] - R[j, j]) where `ref_final_acc` is taken from the
       reference final evaluation (reference R last row).
     - FWT (Forward Transfer): computed only when a `reference` is provided. Here
@@ -111,7 +111,7 @@ def compute_continual_metrics(test_history: list, reference: dict = None) -> Dic
         else:
             ref_final = np.array([np.nan] * num_tasks)
 
-        # Intransigence (IM): mean_j (ref_final_acc[j] - R[j,j]) for valid entries
+        # Intransience (IM): mean_j (ref_final_acc[j] - R[j,j]) for valid entries
         diag_idxs = list(range(min(R.shape[0], R.shape[1]))) if R.size else []
         im_vals = []
         for j in diag_idxs:

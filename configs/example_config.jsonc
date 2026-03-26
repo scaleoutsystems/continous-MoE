@@ -114,7 +114,8 @@
   "pretrain": {
     "enabled": true,
     "num_samples": 2000,
-    "with_replacement": false
+    "with_replacement": false,
+    "epochs": 5 // specific to just pretraining. If 0 or null or missing, uses epochs_per_domain
   },
 
   "pretrain_scheduler": {
@@ -137,7 +138,7 @@
   "router_lr_multiplier_after_epochs": null,
 
   // --------------------------------------------------------------------
-  // Baseline reference (enable to compute FWT/intransigence)
+  // Baseline reference (enable to compute FWT/intransience)
   "baseline": {
     "enabled": true,
     "train": true,

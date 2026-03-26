@@ -69,15 +69,13 @@ def plot_results(log_dir):
         "forgetting",
         "bwt",
         "fwt",
-        "intransigence",
+        "intransience",
     ]:
-        values = [
-            h[key] for h in hist
-            if h[key] is not None
-        ]
-        if len(values) > 0:
-            plt.plot(epochs[:len(values)], values,
-                     label=key)
+        # preserve epoch alignment by creating an array with NaNs for missing values
+        values = [h.get(key, None) for h in hist]
+        values = [np.nan if v is None else v for v in values]
+        if not all(np.isnan(values)):
+            plt.plot(list(epochs), values, label=key)
 
     for b in boundaries:
         plt.axvline(b, color="black", linestyle=":")
@@ -91,56 +89,52 @@ def plot_results(log_dir):
     # Confusion matrices
     # -----------------------
     confusions = data.get("confusion_matrices", None)
+    baseline_confusions = data.get("baseline_confusion_matrices", None)
     if confusions is None:
         print("No confusion matrices found in log data.")
         return
 
-    for d, conf in enumerate(confusions):
+    n_domains = max(len(confusions), len(baseline_confusions) if baseline_confusions is not None else 0)
 
-        if torch.is_tensor(conf):
-            conf = conf.cpu().numpy()
+    for d in range(n_domains):
+        model_conf = confusions[d] if d < len(confusions) else None
+        base_conf = (baseline_confusions[d] if baseline_confusions is not None and d < len(baseline_confusions) else None)
 
-        conf = conf.astype(float)
+        def _prepare_conf(c):
+            if c is None:
+                return None, None
+            if torch.is_tensor(c):
+                c = c.cpu().numpy()
+            c = c.astype(float)
+            row_sums = c.sum(axis=1, keepdims=True)
+            row_sums[row_sums == 0] = 1.0
+            c_norm = c / row_sums
+            # labels (optionally could come from metadata)
+            labels = np.arange(c.shape[0])
+            return c_norm, labels
 
-        # Row-normalize (P(pred=j | true=i))
-        row_sums = conf.sum(axis=1, keepdims=True)
-        row_sums[row_sums == 0] = 1.0
-        conf_norm = conf / row_sums
+        model_norm, labels = _prepare_conf(model_conf)
+        base_norm, _ = _prepare_conf(base_conf)
 
-        remove_empty = False # set to True to exclude classes with no samples in this domain
-        class_names = None # optionally provide class names as a list, not currently supported by DIL_Logger but could be added as metadata in the future
-
-        # Optionally remove empty classes
-        if remove_empty:
-            active = (conf.sum(axis=1) > 0) | (conf.sum(axis=0) > 0)
-            conf_norm = conf_norm[active][:, active]
-            labels = (
-                np.array(class_names)[active]
-                if class_names is not None
-                else np.arange(conf.shape[0])[active]
-            )
+        # choose layout depending on available matrices
+        if model_norm is not None and base_norm is not None:
+            fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+            ax_model, ax_base = axes
+            left_axes = (ax_model, ax_base)
         else:
-            labels = (
-                class_names
-                if class_names is not None
-                else np.arange(conf.shape[0])
-            )
+            fig, ax = plt.subplots(figsize=(6, 5))
+            left_axes = (ax,)
 
-        fig, ax = plt.subplots(figsize=(6, 5))
+        if model_norm is not None:
+            disp = ConfusionMatrixDisplay(confusion_matrix=model_norm, display_labels=labels)
+            disp.plot(ax=left_axes[0], cmap="Blues", values_format=".2f", colorbar=True, im_kw={"vmin": 0.0, "vmax": 1.0})
+            left_axes[0].set_title(f"Model Domain {d} (Row-normalized)")
 
-        disp = ConfusionMatrixDisplay(
-            confusion_matrix=conf_norm,
-            display_labels=labels,
-        )
+        if base_norm is not None:
+            ax_idx = 1 if len(left_axes) > 1 else 0
+            disp_b = ConfusionMatrixDisplay(confusion_matrix=base_norm, display_labels=labels)
+            disp_b.plot(ax=left_axes[ax_idx], cmap="Oranges", values_format=".2f", colorbar=True, im_kw={"vmin": 0.0, "vmax": 1.0})
+            left_axes[ax_idx].set_title(f"Baseline Domain {d} (Row-normalized)")
 
-        disp.plot(
-            ax=ax,
-            cmap="Blues",
-            values_format=".2f",
-            colorbar=True,
-            im_kw={"vmin": 0.0, "vmax": 1.0}
-        )
-
-        ax.set_title(f"Domain {d} (Row-normalized)")
         plt.tight_layout()
         plt.show()
