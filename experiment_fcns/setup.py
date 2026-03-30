@@ -78,8 +78,9 @@ def load_config(path: str) -> Dict[str, Any]:
     dataset_seed = _norm(seeds.get("dataset", global_seed))
     model_seed = _norm(seeds.get("model", global_seed))
     training_seed = _norm(seeds.get("training", global_seed))
-    # pretrain_seed = _norm(seeds.get("pretrain", global_seed))
-    # replay_seed = _norm(seeds.get("replay", global_seed))
+    pretrain_seed = _norm(seeds.get("pretrain", global_seed))
+    baseline_seed = _norm(seeds.get("baseline", global_seed))
+    replay_seed = _norm(seeds.get("replay", global_seed))
 
     # apply global seed if requested; per-stage code (e.g. dataset loader)
     # will consider the other values separately.
@@ -88,7 +89,7 @@ def load_config(path: str) -> Dict[str, Any]:
 
     # show seed summary (None means random/unspecified)
     print(
-        f" seeds: global={global_seed}, dataset={dataset_seed}, model={model_seed}, training={training_seed}"
+        f" seeds: global={global_seed}, dataset={dataset_seed}, model={model_seed}, training={training_seed}, pretrain={pretrain_seed}, baseline={baseline_seed}"
     )
 
     # create dataset and dataloaders first; pass seeds dict so loader can
@@ -283,4 +284,14 @@ def load_config(path: str) -> Dict[str, Any]:
         "pretrain_scheduler": pretrain_scheduler,
         "criterion": criterion,
         "device": device,
+        # resolved seeds (None means random/unspecified)
+        "resolved_seeds": {
+            "global": global_seed,
+            "dataset": dataset_seed,
+            "model": model_seed,
+            "training": training_seed,
+            "pretrain": pretrain_seed,
+            "baseline": baseline_seed,
+            "replay": replay_seed,
+        },
     }

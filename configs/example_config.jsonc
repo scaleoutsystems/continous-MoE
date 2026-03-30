@@ -4,13 +4,13 @@
   "seeds": {
     // any seed value of 0 (or the string "random") means "do not set a
     // seed"; this allows parts of the pipeline to remain nondeterministic.
-    "global": 0
-    // "dataset": 123,
-    // "partition": 123,
-    // "model": 123,
-    // "training": 123,
-    // "pretrain": 123,
-    // "replay": 123
+    "global": 0,
+    "dataset": 1,
+    "partition": 2,
+    "model": 3,
+    "pretrain": 4,
+    "training": 5
+    //"replay": 123
   },
 
   // --------------------------------------------------------------------

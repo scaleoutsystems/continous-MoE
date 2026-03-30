@@ -25,6 +25,8 @@ class DIL_Logger:
         # confusion matrix after pretraining (single matrix) and for baseline models
         self.pretrain_confusion = []
         self.baseline_confusions = []
+        # epoch-by-epoch confusion matrices (full test set evaluated each epoch)
+        self.epoch_confusion_matrices = []
         # keep all intermediate R matrices (after each compute_metrics call)
         self.R_history = []
 
@@ -73,7 +75,7 @@ class DIL_Logger:
             torch.cat(all_targets),
         )
 
-    def compute_metrics(self, domain_id, epoch, domain_acc):
+    def compute_metrics(self, domain_id, epoch, domain_acc, preds=None, targets=None):
         i = domain_id
 
         # Average Accuracy (AA): mean of current row
@@ -133,6 +135,16 @@ class DIL_Logger:
         intrans = None
         if self.baseline is not None:
             intrans = self.baseline[i] - domain_acc[i]
+        # if predictions/targets provided, compute and store epoch confusion
+        if preds is not None and targets is not None:
+            try:
+                conf = torch.zeros(self.C, self.C)
+                for t, p in zip(targets, preds):
+                    conf[int(t), int(p)] += 1
+                self.epoch_confusion_matrices.append(conf)
+            except Exception:
+                # if something goes wrong, append None to preserve epoch alignment
+                self.epoch_confusion_matrices.append(None)
 
         return {
             "epoch": epoch,
@@ -219,10 +231,15 @@ class DIL_Logger:
             # convert confusions to cpu tensors for portability
             "confusion_matrices": [c.cpu() if torch.is_tensor(c) else c
                                    for c in self.confusions],
+            # epoch-by-epoch full-test confusion matrices
+            "epoch_confusion_matrices": [c.cpu() if torch.is_tensor(c) else c
+                                          for c in self.epoch_confusion_matrices],
             # pretrain confusion (single matrix) and baseline (per-domain) confusions
             "pretrain_confusion": (self.pretrain_confusion.cpu() if torch.is_tensor(self.pretrain_confusion) else self.pretrain_confusion),
             "baseline_confusion_matrices": [c.cpu() if torch.is_tensor(c) else c
                                            for c in self.baseline_confusions],
+            # seed information if available (populated by the experiment driver)
+            "seeds": getattr(self, "seeds", None),
         }
         torch.save(save_dict, outpath)
 
