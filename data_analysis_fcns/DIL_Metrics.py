@@ -315,7 +315,7 @@ def _compute_imbalanced_metrics_from_conf(conf):
         denom = TP + FP
         per['precision'][k] = TP / denom if denom != 0 else np.nan
 
-        # f1
+        # f1 score = 2*recall*precision/(recall+precision)
         r = per['recall'][k]
         p = per['precision'][k]
         per['f1'][k] = 2 * r * p / (r + p) if (r is not None and p is not None and (r + p) != 0) else np.nan
@@ -334,6 +334,7 @@ def _compute_imbalanced_metrics_from_conf(conf):
         g_mean = float(np.prod(recalls) ** (1.0 / m))
 
     # MAUC computation: pairwise binary AUCs derived from the 2x2 submatrices
+    # MAUC = (2 / (m*(m-1))) * sum( (AUC(i,j) + AUC(j,i)) /2) where i<j
     auc_sum = 0.0
     count = 0
     for i in range(m):
