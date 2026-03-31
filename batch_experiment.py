@@ -1,6 +1,34 @@
 #!/usr/bin/env python3
 """Run multiple experiments described by a metaconfig JSONC file.
 
+Example usage in ubuntu: `python3 batch_experiment.py --metaconfig meta_configs/cifar10_easyDirichlet.jsonc`
+Example usage headless: `nohup python3 batch_experiment.py --metaconfig meta_configs/cifar10_easyDirichlet.jsonc > batch_experiment.py.log 2>&1 &`
+
+To check if a process is running:
+ps aux | grep -i myscript.py | grep -v grep
+# or by pattern
+pgrep -a -f myscript.py
+# or by port (if it listens on a port)
+ss -ltnp | grep :<port>
+
+To kill a process:
+# graceful
+kill <PID>
+
+# force if it won't exit
+kill -9 <PID>
+
+# kill by command pattern
+pkill -f myscript.py
+# force by pattern
+pkill -9 -f myscript.py
+
+# watch logs
+tail -f /path/to/myscript.log
+
+# confirm it's gone
+ps -p <PID> && echo "still running" || echo "stopped"
+
 The metaconfig should list `configs` (list of config filenames or paths)
 and a set of seed lists. Each seed-list length defines how many runs to do
 per config. Example:
@@ -210,6 +238,7 @@ def main():
                     failures += 1
                     logf.write(f"EXCEPTION during run at {datetime.now().isoformat()}: {e}\n")
                     logf.flush()
+                    print(f"EXCEPTION during run {runs_done}/{total_runs} on config {cfg_path}: {e}")
                     msg = f"Metaconfig {args.metaconfig} - exception during run {runs_done}/{total_runs} on config {cfg_path}: {e}"
                     send_discord(hook_url, msg)
 
