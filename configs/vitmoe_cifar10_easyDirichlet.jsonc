@@ -21,8 +21,8 @@
   "resize": 0, // 0 = no resize. This resize affects all images
 
   "augmentation": {
-    "random_resize_crop": true,
-    "resize": 32,
+    "random_resize_crop": false,
+    "resize": null,
     "random_flip": true,
     "color_jitter": true,
     "blur": true,

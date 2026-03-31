@@ -254,7 +254,7 @@ def main():
                 print("Using randomized seed for baseline stage")
 
             for domain_id in range(num_domains):
-                bmodel = torch.deepcopy(model)
+                bmodel = deepcopy(model)
                 bmodel.to(device)
                 try:
                     missing, unexpected = bmodel.load_state_dict(post_pretrain_state, strict=False)
