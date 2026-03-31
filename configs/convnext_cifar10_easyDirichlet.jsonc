@@ -1,0 +1,147 @@
+{
+  // --------------------------------------------------------------------
+  // Seeds (optional): global defaults and per-stage overrides
+  "seeds": {
+    // any seed value of 0 (or the string "random") means "do not set a
+    // seed"; this allows parts of the pipeline to remain nondeterministic.
+    "global": 0,
+    "dataset": 1,
+    "partition": 2,
+    "model": 3,
+    "pretrain": 4,
+    "training": 5
+    //"replay": 123
+  },
+
+  // --------------------------------------------------------------------
+  // Dataset specification
+  "dataset": "cifar10",
+  "dataset_root": "./datasets",
+//   "mini_dataset": 12000,                // integer sample count or null for full
+  "resize": 0, // 0 = no resize. This resize affects all images
+
+  "augmentation": {
+    "random_resize_crop": true,
+    "resize": 32,
+    "random_flip": true,
+    "color_jitter": true,
+    "blur": true,
+    "noise": true
+  },
+
+  // --------------------------------------------------------------------
+  // Partitioning (pick one of these blocks)
+  "num_partitions": 5,
+  "partition": {
+    // Dirichlet-split example:
+    // "type": "dirichlet",
+    // "alpha": 0.3,
+    // "min_size": 10,
+    // "balanced": false
+
+    // Static / contiguous split example:
+    // "type": "static"
+
+    "type": "dirichlet",
+    "alpha": 0.5,
+    "min_size": 1400,
+    "balanced": true
+  },
+
+  "train_frac": 0.8,
+  "batch_size": 128,
+  "shuffle": true,
+
+  // --------------------------------------------------------------------
+  // Model configuration
+  "model": {
+    "name": "convnext_tiny", // "convnext_tiny", "resnet18", "vit_moe"
+    "num_classes": 10,
+    "pretrained": false,
+    // "img_size" is added automatically by the loader based on the first
+    // training batch.  You may override it here if you know the input
+    // resolution in advance; otherwise leave it unspecified.
+    // "img_size": 224,
+    "patch_size": 8
+    // If using vit_moe, you may specify additional keys for the MoE.
+    // Configuration separates the number of unshared and shared experts
+    // explicitly
+    // "moe_layer_indices": "every_other",
+    // "moe_num_unshared_experts": 4,
+    // "moe_num_shared_experts": 1,
+    // "moe_top_k": 1, // only selects between unshared, shared are always used
+    // "moe_route_with_cls_token": true
+  },
+
+  // --------------------------------------------------------------------
+  // Loss and learning rate
+  "loss": {
+    "name": "weighted_cross_entropy", // options: "cross_entropy", "weighted_cross_entropy", "focal"
+    "lr": 0.001,
+    // set to true to enable per-class weighting based on partition distribution
+    "weighted": true,
+    // upper limit applied when computing inverse-frequency weights
+    "weight_upper_limit": 20.0,
+    // if true new weights will be averaged with the previous set
+    "weight_cumulative": false
+
+    // focal-loss specific parameters (ignored for plain CE)
+    // "alpha" may be a scalar, an array of length num_classes, or the
+    // string "auto"/null.  In the latter case the alpha values are computed
+    // from the current partition's class counts, identical to the behaviour
+    // of the weighted cross-entropy loss.
+
+    // "alpha": "auto",
+    // "gamma": 2.0
+  },
+
+  // --------------------------------------------------------------------
+  // Optimizer
+  "optimizer": {
+    "name": "adamw"          // "adam", "adamw", or "sgd"
+    // "momentum": 0.9        // only for SGD
+  },
+
+  // --------------------------------------------------------------------
+  // Scheduler (optional)
+  // "scheduler": {
+  //   "name": null 
+    // "cosine" for CosineAnnealingLR
+    // Used for CosineAnnealing; if null, uses epochs_per_domain as T_max
+    //"T_max": null
+  // },
+
+  "pretrain": {
+    "enabled": true,
+    "num_samples": 2000,
+    "with_replacement": false,
+    "epochs": 7 // specific to just pretraining. If 0 or null or missing, uses epochs_per_domain
+  },
+
+  "pretrain_scheduler": {
+    "name": "linear", // e.g. "cosine", "step", "linear"
+    "start_factor": 0.1,
+    "end_factor": 1.0
+  },
+
+  "epochs_per_domain": 3,
+
+  // --------------------------------------------------------------------
+  // Continual learning options
+  // "router_balancing": true,
+  // "router_balance_strength": 0.5,
+  // "router_freeze_after_epochs": 2,
+  // // set to a value <1 to slow router learning; 0 is equivalent to freezing
+  // "router_lr_multiplier": 0.0,
+  // // optionally change the multiplier at a particular epoch (useful for
+  // // scheduling); null means never change midrun
+  // "router_lr_multiplier_after_epochs": null,
+
+  // --------------------------------------------------------------------
+  // Baseline reference (enable to compute FWT/intransience)
+  "baseline": {
+    "enabled": true,
+    "train": true,
+    "accuracies": null
+  }
+}
