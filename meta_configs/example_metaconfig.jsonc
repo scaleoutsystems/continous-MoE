@@ -1,0 +1,15 @@
+{
+  // Example metaconfig to run the small mini-debug config once
+  // Add additional configs inside the brackets, comma separated
+  "configs": ["configs/mini_debug.jsonc"],
+  // Provide one seed-group (single-run). Use integers or "random".
+//   "global": [42],
+  "dataset": [7],
+  "partition": [42],
+//   "loader": loader_seed,
+//   "model": model_seed, 
+  "training": [123]
+//   "pretrain": pretrain_seed,
+//   "baseline": baseline_seed,
+//   "replay": replay_seed, // not currently supported
+}

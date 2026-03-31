@@ -105,15 +105,30 @@ def _clone_dataloader_with_dataset(source_loader, dataset):
     except Exception:
         shuffle = False
 
-    return DataLoader(dataset,
-                      batch_size=source_loader.batch_size,
-                      shuffle=shuffle,
-                      sampler=None,
-                      num_workers=source_loader.num_workers,
-                      pin_memory=getattr(source_loader, 'pin_memory', False),
-                      prefetch_factor=getattr(source_loader, 'prefetch_factor', 2),
-                      drop_last=getattr(source_loader, 'drop_last', False),
-                      timeout=getattr(source_loader, 'timeout', 0))
+    num_workers = getattr(source_loader, 'num_workers', 0)
+    pin_memory = getattr(source_loader, 'pin_memory', False)
+    drop_last = getattr(source_loader, 'drop_last', False)
+    timeout = getattr(source_loader, 'timeout', 0)
+    if num_workers and num_workers > 0:
+        prefetch = getattr(source_loader, 'prefetch_factor', 2)
+        return DataLoader(dataset,
+                          batch_size=source_loader.batch_size,
+                          shuffle=shuffle,
+                          sampler=None,
+                          num_workers=num_workers,
+                          pin_memory=pin_memory,
+                          prefetch_factor=prefetch,
+                          drop_last=drop_last,
+                          timeout=timeout)
+    else:
+        return DataLoader(dataset,
+                          batch_size=source_loader.batch_size,
+                          shuffle=shuffle,
+                          sampler=None,
+                          num_workers=num_workers,
+                          pin_memory=pin_memory,
+                          drop_last=drop_last,
+                          timeout=timeout)
 
 
 def ensure_cifar10(root: str, download: bool = True):
@@ -330,14 +345,24 @@ def create_train_test_loaders(
         train_subset = Subset(dataset, train_idx)
         test_subset = Subset(dataset, test_idx)
 
-        train_loaders.append(
-            DataLoader(train_subset, batch_size=batch_size, shuffle=shuffle,
-                       num_workers=num_workers, pin_memory=True, prefetch_factor=prefetch_factor)
-        )
-        test_loaders.append(
-            DataLoader(test_subset, batch_size=batch_size, shuffle=False,
-                       num_workers=num_workers, pin_memory=True, prefetch_factor=prefetch_factor)
-        )
+        if num_workers and num_workers > 0:
+            train_loaders.append(
+                DataLoader(train_subset, batch_size=batch_size, shuffle=shuffle,
+                           num_workers=num_workers, pin_memory=True, prefetch_factor=prefetch_factor)
+            )
+            test_loaders.append(
+                DataLoader(test_subset, batch_size=batch_size, shuffle=False,
+                           num_workers=num_workers, pin_memory=True, prefetch_factor=prefetch_factor)
+            )
+        else: # prefetch_factor not supported
+            train_loaders.append(
+                DataLoader(train_subset, batch_size=batch_size, shuffle=shuffle,
+                           num_workers=num_workers, pin_memory=True)
+            )
+            test_loaders.append(
+                DataLoader(test_subset, batch_size=batch_size, shuffle=False,
+                           num_workers=num_workers, pin_memory=True)
+            )
     return train_loaders, test_loaders
 
 
@@ -385,6 +410,8 @@ def create_dataloaders(config: Dict) -> Dict:
         torch.manual_seed(dataset_seed)
     
     resize = config.get("resize", 0)
+    # allow overriding number of dataloader workers from config (useful for Windows/testing)
+    num_workers_cfg = int(config.get("num_workers", 4))
     if resize > 0:
         trf = transforms.Compose([
         transforms.Resize(resize),
@@ -443,9 +470,13 @@ def create_dataloaders(config: Dict) -> Dict:
             pretrain_indices = random.sample(all_indices, min(num_pre, len(all_indices)))
 
         pre_subset = Subset(dataset, pretrain_indices)
-        pretrain_loader = DataLoader(pre_subset, batch_size=batch_size,
-                                     shuffle=True, num_workers=4, pin_memory=True,
-                                     prefetch_factor=2)
+        if num_workers_cfg and num_workers_cfg > 0:
+            pretrain_loader = DataLoader(pre_subset, batch_size=batch_size,
+                                         shuffle=True, num_workers=num_workers_cfg, pin_memory=True,
+                                         prefetch_factor=2)
+        else:
+            pretrain_loader = DataLoader(pre_subset, batch_size=batch_size,
+                                         shuffle=True, num_workers=num_workers_cfg, pin_memory=True)
 
     if not with_replacement:
         pretrain_set = set(pretrain_indices)
@@ -499,6 +530,7 @@ def create_dataloaders(config: Dict) -> Dict:
         batch_size=batch_size,
         shuffle=shuffle,
         seed=loader_seed,
+        num_workers=num_workers_cfg,
     )
 
     # compute class distributions from the available indices (and pretrain indices)
