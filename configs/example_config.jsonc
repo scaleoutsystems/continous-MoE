@@ -22,7 +22,8 @@
 
   "augmentation": {
     "random_resize_crop": false,
-    "resize": null,
+    "random_crop": true,
+    "resize": 32, // affects both random_resize_crop and random_crop
     "random_flip": true,
     "color_jitter": true,
     "blur": true,

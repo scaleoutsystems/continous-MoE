@@ -62,7 +62,7 @@
     // training batch.  You may override it here if you know the input
     // resolution in advance; otherwise leave it unspecified.
     // "img_size": 224,
-    "patch_size": 8
+    "patch_size": 4
     // If using vit_moe, you may specify additional keys for the MoE.
     // Configuration separates the number of unshared and shared experts
     // // explicitly
@@ -104,18 +104,18 @@
 
   // --------------------------------------------------------------------
   // Scheduler (optional)
-  // "scheduler": {
-  //   "name": null 
+  "scheduler": {
+    "name": "cosine", 
     // "cosine" for CosineAnnealingLR
     // Used for CosineAnnealing; if null, uses epochs_per_domain as T_max
-    //"T_max": null
-  // },
+    "T_max": null
+  },
 
   "pretrain": {
     "enabled": true,
     "num_samples": 2000,
     "with_replacement": false,
-    "epochs": 7 // specific to just pretraining. If 0 or null or missing, uses epochs_per_domain
+    "epochs": 3 // specific to just pretraining. If 0 or null or missing, uses epochs_per_domain
   },
 
   "pretrain_scheduler": {
@@ -129,19 +129,19 @@
   // --------------------------------------------------------------------
   // Continual learning options
   "router_balancing": true,
-  "router_balance_strength": 0.5,
-  "router_freeze_after_epochs": 2,
+  "router_balance_strength": null,
+  "router_freeze_after_epochs": null,
   // set to a value <1 to slow router learning; 0 is equivalent to freezing
-  "router_lr_multiplier": 0.0,
+  "router_lr_multiplier": 0.1,
   // optionally change the multiplier at a particular epoch (useful for
   // scheduling); null means never change midrun
-  "router_lr_multiplier_after_epochs": null,
+  "router_lr_multiplier_after_epochs": 2,
 
   // --------------------------------------------------------------------
   // Baseline reference (enable to compute FWT/intransience)
   "baseline": {
-    "enabled": true,
-    "train": true,
+    "enabled": false,
+    "train": false,
     "accuracies": null
   }
 }
