@@ -58,6 +58,10 @@
     "name": "vit_moe", // "convnext_tiny", "resnet18", "vit_moe"
     "num_classes": 10,
     "pretrained": false,
+    "embed_dim": 384, 
+    "depth": 8, 
+    "num_heads": 6, 
+    "mlp_ratio": 4.0,
     // "img_size" is added automatically by the loader based on the first
     // training batch.  You may override it here if you know the input
     // resolution in advance; otherwise leave it unspecified.

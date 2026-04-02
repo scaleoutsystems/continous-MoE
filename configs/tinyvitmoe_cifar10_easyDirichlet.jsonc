@@ -43,7 +43,7 @@
     // "type": "static"
 
     "type": "dirichlet",
-    "alpha": 0.5,
+    "alpha": 10,
     "min_size": 1400,
     "balanced": true
   },

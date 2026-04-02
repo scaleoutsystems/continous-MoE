@@ -4,25 +4,25 @@
   "seeds": {
     // any seed value of 0 (or the string "random") means "do not set a
     // seed"; this allows parts of the pipeline to remain nondeterministic.
-    "global": 0
-    // "dataset": 123,
-    // "partition": 123,
-    // "model": 123,
-    // "training": 123,
-    // "pretrain": 123,
-    // "replay": 123
+    "global": 0,
+    "dataset": 1,
+    "partition": 2,
+    "model": 3,
+    "pretrain": 4,
+    "training": 5
+    //"replay": 123
   },
 
   // --------------------------------------------------------------------
   // Dataset specification
   "dataset": "cifar10",
   "dataset_root": "./datasets",
-  "mini_dataset": 1000,                // integer sample count or null for full
+//   "mini_dataset": 12000,                // integer sample count or null for full
   "resize": 0, // 0 = no resize. This resize affects all images
 
   "augmentation": {
-    "random_resize_crop": true,
-    "resize": 32,
+    "random_resize_crop": false,
+    "resize": null,
     "random_flip": true,
     "color_jitter": true,
     "blur": true,
@@ -43,8 +43,8 @@
     // "type": "static"
 
     "type": "dirichlet",
-    "alpha": 0.3,
-    "min_size": 10,
+    "alpha": 100,
+    "min_size": 1400,
     "balanced": true
   },
 
@@ -55,35 +55,35 @@
   // --------------------------------------------------------------------
   // Model configuration
   "model": {
-    "name": "vit_moe", // "convnext_tiny", "resnet18", "vit_moe"
+    "name": "convnext_tiny", // "convnext_tiny", "resnet18", "vit_moe"
     "num_classes": 10,
     "pretrained": false,
     // "img_size" is added automatically by the loader based on the first
     // training batch.  You may override it here if you know the input
     // resolution in advance; otherwise leave it unspecified.
     // "img_size": 224,
-    "patch_size": 8,
+    "patch_size": 8
     // If using vit_moe, you may specify additional keys for the MoE.
     // Configuration separates the number of unshared and shared experts
-    // explicitly
-    "moe_layer_indices": "every_other",
-    "moe_num_unshared_experts": 4,
-    "moe_num_shared_experts": 1,
-    "moe_top_k": 1, // only selects between unshared, shared are always used
-    "moe_route_with_cls_token": true
+    // // explicitly
+    // "moe_layer_indices": "every_other",
+    // "moe_num_unshared_experts": 4,
+    // "moe_num_shared_experts": 1,
+    // "moe_top_k": 1, // only selects between unshared, shared are always used
+    // "moe_route_with_cls_token": true
   },
 
   // --------------------------------------------------------------------
   // Loss and learning rate
   "loss": {
-    "name": "focal", // options: "cross_entropy", "weighted_cross_entropy", "focal"
+    "name": "weighted_cross_entropy", // options: "cross_entropy", "weighted_cross_entropy", "focal"
     "lr": 0.001,
     // set to true to enable per-class weighting based on partition distribution
     "weighted": true,
     // upper limit applied when computing inverse-frequency weights
     "weight_upper_limit": 20.0,
     // if true new weights will be averaged with the previous set
-    "weight_cumulative": false,
+    "weight_cumulative": false
 
     // focal-loss specific parameters (ignored for plain CE)
     // "alpha" may be a scalar, an array of length num_classes, or the
@@ -91,8 +91,8 @@
     // from the current partition's class counts, identical to the behaviour
     // of the weighted cross-entropy loss.
 
-    "alpha": "auto",
-    "gamma": 2.0
+    // "alpha": "auto",
+    // "gamma": 2.0
   },
 
   // --------------------------------------------------------------------
@@ -113,9 +113,9 @@
 
   "pretrain": {
     "enabled": true,
-    "num_samples": 200,
+    "num_samples": 2000,
     "with_replacement": false,
-    "epochs": 5 // specific to just pretraining. If 0 or null or missing, uses epochs_per_domain
+    "epochs": 7 // specific to just pretraining. If 0 or null or missing, uses epochs_per_domain
   },
 
   "pretrain_scheduler": {
@@ -124,13 +124,13 @@
     "end_factor": 1.0
   },
 
-  "epochs_per_domain": 1,
+  "epochs_per_domain": 3,
 
   // --------------------------------------------------------------------
   // Continual learning options
   "router_balancing": true,
   "router_balance_strength": 0.5,
-  "router_freeze_after_epochs": 1,
+  "router_freeze_after_epochs": 2,
   // set to a value <1 to slow router learning; 0 is equivalent to freezing
   "router_lr_multiplier": 0.0,
   // optionally change the multiplier at a particular epoch (useful for
