@@ -311,6 +311,10 @@ def main():
             print("Using randomized seed for training stage")
 
         # Main continual training
+
+        # recreate scheduler in case the learning groups changed due to routerLR mult or otherwise
+        scheduler = _make_scheduler_for_optimizer(optimizer, cfg=cfg, epochs_per_domain=epochs_per_domain)
+
         print("===== Main model stage =====")
         for domain_id in range(num_domains):
             print(f"\n===== Training Domain {domain_id} =====")
