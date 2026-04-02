@@ -74,11 +74,11 @@ def build_augmentation_transform(config):
     ops = []
 
     if augmentation_cfg.get("random_resize_crop", False):
-        size = config.get("resize", 32)
+        size = augmentation_cfg.get("resize", 32)
         ops.append(transforms.RandomResizedCrop(size=size, scale=(0.8, 1.0), ratio=(1, 1)))
 
     if augmentation_cfg.get("random_crop", False):
-        size = config.get("resize", 32)
+        size = augmentation_cfg.get("resize", 32)
         ops.append(transforms.RandomCrop(size=size, padding=4))
 
     if augmentation_cfg.get("random_flip", False):

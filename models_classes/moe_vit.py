@@ -149,7 +149,11 @@ class MoE(nn.Module):
         self.register_buffer('last_load', torch.zeros(num_unshared_experts), persistent=False)
 
         # cumulative stats used for utilization metrics (on CPU)
+        # cumulative_gate_sum: sum of gate probabilities over tokens for each unshared expert
         self.cumulative_gate_sum = torch.zeros(num_unshared_experts)
+        # cumulative_selected_counts: number of tokens that selected each expert (top-k selection)
+        self.cumulative_selected_counts = torch.zeros(num_unshared_experts)
+        # cumulative_samples counts tokens processed (B * num_tokens)
         self.cumulative_samples = 0
 
         # last differentiable gate probs (kept on device, not detached)
@@ -207,13 +211,19 @@ class MoE(nn.Module):
     def reset_cumulative_stats(self):
         # keep stats only for the router outputs (unshared experts)
         self.cumulative_gate_sum = torch.zeros(self.num_unshared_experts)
+        self.cumulative_selected_counts = torch.zeros(self.num_unshared_experts)
         self.cumulative_samples = 0
 
     def get_cumulative_stats(self):
         if self.cumulative_samples == 0:
-            return {'fraction': [0.0] * self.num_unshared_experts, 'samples': 0}
+            return {
+                'fraction': [0.0] * self.num_unshared_experts,
+                'selected_fraction': [0.0] * self.num_unshared_experts,
+                'samples': 0,
+            }
         frac = (self.cumulative_gate_sum / float(max(1, self.cumulative_samples))).tolist()
-        return {'fraction': frac, 'samples': int(self.cumulative_samples)}
+        sel_frac = (self.cumulative_selected_counts / float(max(1, self.cumulative_samples))).tolist()
+        return {'fraction': frac, 'selected_fraction': sel_frac, 'samples': int(self.cumulative_samples)}
 
     def forward(self, x):
         """Sparse dispatch based on a summary vector.
@@ -230,20 +240,19 @@ class MoE(nn.Module):
         """
         B, N, C = x.shape
 
-        # compute routing summary
-        if self.route_with_cls_token:
-            summary = x[:, 0]
-        else:
-            summary = x.mean(dim=1)
-        logits = self.gate(summary)  # (B, U)
+        # Routing per-token: apply gate to each token representation
+        # logits shape: (B, N, U)
+        logits = self.gate(x)
 
-        # store differentiable gate probs (used by router-balancing loss)
-        gate_probs = F.softmax(logits, dim=-1)  # (B, U)
-        self._last_gate_probs = gate_probs
+        # differentiable gate probabilities per token
+        gate_probs = F.softmax(logits, dim=-1)  # (B, N, U)
+        # flatten tokens into one batch dimension for downstream utilities
+        self._last_gate_probs = gate_probs.reshape(-1, gate_probs.size(-1))  # (B*N, U)
 
-        # accumulate CPU-side statistics for utilization reporting
-        self.cumulative_gate_sum = (self.cumulative_gate_sum.cpu() + gate_probs.detach().sum(dim=0).cpu())
-        self.cumulative_samples += B
+        # accumulate CPU-side statistics for utilization reporting (sum over tokens and batch)
+        self.cumulative_gate_sum = (self.cumulative_gate_sum.cpu() + gate_probs.detach().sum(dim=(0, 1)).cpu())
+        # cumulative_samples tracks tokens processed
+        self.cumulative_samples += (B * N)
 
         U = self.num_unshared_experts
         T = self.num_shared_experts
@@ -252,40 +261,42 @@ class MoE(nn.Module):
         if k == 0 and T == 0:
             return x
 
-        # select top-k unshared experts
-        selected_mask = torch.zeros((B, U), device=logits.device, dtype=torch.bool)
+        # select top-k unshared experts PER TOKEN
+        # selected_mask shape: (B, N, U)
+        selected_mask = torch.zeros((B, N, U), device=logits.device, dtype=torch.bool)
         if k > 0:
-            _, topk_idx = torch.topk(logits, k, dim=-1)
-            selected_mask.scatter_(1, topk_idx, True)
+            _, topk_idx = torch.topk(logits, k, dim=-1)  # (B, N, k)
+            selected_mask.scatter_(2, topk_idx, True)
 
-        # compute normalized weights among selected unshared experts
-        weights_un = torch.zeros((B, U), device=logits.device)
+        # compute normalized weights among selected unshared experts (per token)
+        weights_un = torch.zeros((B, N, U), device=logits.device)
         if k > 0:
             very_neg = -1e9
             masked_logits = logits.clone()
             masked_logits[~selected_mask] = very_neg
             weights_un = F.softmax(masked_logits, dim=-1) * selected_mask.float()
 
-        # simple stats (importance/load) only for unshared experts
-        importance = weights_un.sum(dim=0)
-        load = selected_mask.float().sum(dim=0) * N
+        # simple stats (importance/load) aggregated over tokens
+        importance = weights_un.sum(dim=(0, 1))  # sum across batch and token dims -> (U,)
+        load = selected_mask.float().sum(dim=(0, 1))  # number of tokens selecting each expert
         self.last_importance = importance.detach().cpu()
         self.last_load = load.detach().cpu()
 
-        # assemble output: weighted unshared + unweighted shared
+        # accumulate selected token counts into cumulative_selected_counts
+        try:
+            self.cumulative_selected_counts = (self.cumulative_selected_counts + load.detach().cpu())
+        except Exception:
+            self.cumulative_selected_counts = load.detach().cpu().clone()
+
+        # assemble output: weighted unshared + unweighted shared (vectorised over tokens)
         out = torch.zeros_like(x)
-        for b in range(B):
-            tokens_b = x[b]
-            combined = torch.zeros_like(tokens_b)
-            # unshared contributions
-            for e in range(U):
-                if selected_mask[b, e]:
-                    w = weights_un[b, e]
-                    combined = combined + w.unsqueeze(-1) * self.experts[e](tokens_b)
-            # shared contributions
-            for e in range(U, total):
-                combined = combined + self.experts[e](tokens_b)
-            out[b] = combined
+        # unshared experts
+        for e in range(U):
+            w_e = weights_un[..., e].unsqueeze(-1)  # (B, N, 1)
+            out = out + w_e * self.experts[e](x)
+        # shared experts (unweighted)
+        for e in range(U, total):
+            out = out + self.experts[e](x)
 
         return out
 
@@ -449,7 +460,14 @@ class ViTMoE(nn.Module):
         for idx, m in enumerate(self.modules()):
             if isinstance(m, MoE):
                 stats = m.get_cumulative_stats() if hasattr(m, 'get_cumulative_stats') else {}
-                results.append({'layer_index': idx, 'fraction': stats.get('fraction', []), 'samples': stats.get('samples', 0)})
+                # 'fraction' : avg gate probability per expert (token-weighted)
+                # 'selected_fraction' : fraction of tokens that selected each expert (top-k count / total tokens)
+                results.append({
+                    'layer_index': idx,
+                    'fraction': stats.get('fraction', []),
+                    'patch_load': stats.get('selected_fraction', []),
+                    'samples': stats.get('samples', 0),
+                })
         return results
 
 def create_moe_vit(num_classes=10,
