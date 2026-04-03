@@ -49,7 +49,7 @@ class Core50Dataset(torch.utils.data.Dataset):
     """
 
     def __init__(self, root: str, settings: List[int] = None, transform=None):
-        core_root = os.path.join(root, "core50_128x128")
+        core_root = os.path.join(root, "core50_128x128_depth")
         if not os.path.isdir(core_root):
             raise RuntimeError(f"Core50 root not found at {core_root}")
         # default: use all sessions found (s1..s11)
@@ -257,7 +257,7 @@ def ensure_core50(root: str):
     The expected layout is ``root/core50`` but the loader does not inspect
     the internals. The user must supply the dataset manually.
     """
-    core_root = os.path.join(root, 'core50_128x128')
+    core_root = os.path.join(root, 'core50_128x128_depth')
     if not os.path.isdir(core_root):
         raise RuntimeError(
             "Core50 directory not found under dataset_root. "
