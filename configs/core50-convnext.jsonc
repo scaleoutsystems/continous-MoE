@@ -75,23 +75,23 @@
     "name": "convnext_tiny", // "convnext_tiny", "resnet18", "vit_moe"
     "num_classes": 50,
     "pretrained": false,
-    "embed_dim": 384, 
-    "depth": 12, 
-    "num_heads": 6, 
-    "mlp_ratio": 4.0,
+    // "embed_dim": 384, 
+    // "depth": 12, 
+    // "num_heads": 6, 
+    // "mlp_ratio": 4.0,
     // "img_size" is added automatically by the loader based on the first
     // training batch.  You may override it here if you know the input
     // resolution in advance; otherwise leave it unspecified.
     // "img_size": 224,
-    "patch_size": 16,
+    "patch_size": 16
     // If using vit_moe, you may specify additional keys for the MoE.
     // Configuration separates the number of unshared and shared experts
     // explicitly
-    "moe_layer_indices": "every_other",
-    "moe_num_unshared_experts": 4,
-    "moe_num_shared_experts": 1,
-    "moe_top_k": 1, // only selects between unshared, shared are always used
-    "moe_route_with_cls_token": true
+    // "moe_layer_indices": "every_other",
+    // "moe_num_unshared_experts": 4,
+    // "moe_num_shared_experts": 1,
+    // "moe_top_k": 1, // only selects between unshared, shared are always used
+    // "moe_route_with_cls_token": true
   },
 
   // --------------------------------------------------------------------
@@ -136,7 +136,7 @@
     "enabled": true,
     "num_samples": 2000,
     "with_replacement": false,
-    "epochs": 5 // specific to just pretraining. If 0 or null or missing, uses epochs_per_domain
+    "epochs": 7 // specific to just pretraining. If 0 or null or missing, uses epochs_per_domain
   },
 
   "pretrain_scheduler": {
@@ -149,14 +149,14 @@
 
   // --------------------------------------------------------------------
   // Continual learning options
-  "router_balancing": true,
-  "router_balance_strength": 0.5,
-  "router_freeze_after_epochs": 1,
-  // set to a value <1 to slow router learning; 0 is equivalent to freezing
-  "router_lr_multiplier": 0.0,
-  // optionally change the multiplier at a particular epoch (useful for
-  // scheduling); null means never change midrun
-  "router_lr_multiplier_after_epochs": null,
+  // "router_balancing": false,
+  // "router_balance_strength": 0.5,
+  // "router_freeze_after_epochs": 1,
+  // // set to a value <1 to slow router learning; 0 is equivalent to freezing
+  // "router_lr_multiplier": 0.0,
+  // // optionally change the multiplier at a particular epoch (useful for
+  // // scheduling); null means never change midrun
+  // "router_lr_multiplier_after_epochs": null,
 
   // --------------------------------------------------------------------
   // Baseline reference (enable to compute FWT/intransience)

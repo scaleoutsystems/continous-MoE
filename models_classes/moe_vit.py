@@ -363,6 +363,8 @@ class ViTMoE(nn.Module):
                 moe_layer_indices = [i for i in range(depth) if (i % 2) == 1]
             elif moe_layer_indices == 'all':
                 moe_layer_indices = list(range(depth))
+            elif moe_layer_indices == 'back_half_every_other':
+                moe_layer_indices = [i for i in range(depth) if ((i < depth // 2) and (i % 2) == 1)]
             else:
                 moe_layer_indices = []
 

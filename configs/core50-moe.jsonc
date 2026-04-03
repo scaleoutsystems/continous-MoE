@@ -87,7 +87,7 @@
     // If using vit_moe, you may specify additional keys for the MoE.
     // Configuration separates the number of unshared and shared experts
     // explicitly
-    "moe_layer_indices": "every_other",
+    "moe_layer_indices": "back_half_every_other",
     "moe_num_unshared_experts": 4,
     "moe_num_shared_experts": 1,
     "moe_top_k": 1, // only selects between unshared, shared are always used
@@ -136,7 +136,7 @@
     "enabled": true,
     "num_samples": 2000,
     "with_replacement": false,
-    "epochs": 5 // specific to just pretraining. If 0 or null or missing, uses epochs_per_domain
+    "epochs": 7 // specific to just pretraining. If 0 or null or missing, uses epochs_per_domain
   },
 
   "pretrain_scheduler": {
@@ -150,13 +150,13 @@
   // --------------------------------------------------------------------
   // Continual learning options
   "router_balancing": true,
-  "router_balance_strength": 0.5,
-  "router_freeze_after_epochs": 1,
+  "router_balance_strength": 0.1,
+  "router_freeze_after_epochs": null,
   // set to a value <1 to slow router learning; 0 is equivalent to freezing
-  "router_lr_multiplier": 0.0,
+  "router_lr_multiplier": 0.1,
   // optionally change the multiplier at a particular epoch (useful for
   // scheduling); null means never change midrun
-  "router_lr_multiplier_after_epochs": null,
+  "router_lr_multiplier_after_epochs": 2,
 
   // --------------------------------------------------------------------
   // Baseline reference (enable to compute FWT/intransience)

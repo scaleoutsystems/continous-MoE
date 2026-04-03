@@ -82,7 +82,7 @@
     // If using vit_moe, you may specify additional keys for the MoE.
     // Configuration separates the number of unshared and shared experts
     // explicitly
-    "moe_layer_indices": "every_other",
+    "moe_layer_indices": "every_other", // "every_other", "back_half_every_other", "all"
     "moe_num_unshared_experts": 4,
     "moe_num_shared_experts": 1,
     "moe_top_k": 1, // only selects between unshared, shared are always used

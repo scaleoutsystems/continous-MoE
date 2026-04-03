@@ -136,7 +136,7 @@
     "enabled": true,
     "num_samples": 2000,
     "with_replacement": false,
-    "epochs": 5 // specific to just pretraining. If 0 or null or missing, uses epochs_per_domain
+    "epochs": 7 // specific to just pretraining. If 0 or null or missing, uses epochs_per_domain
   },
 
   "pretrain_scheduler": {
@@ -149,9 +149,9 @@
 
   // --------------------------------------------------------------------
   // Continual learning options
-  "router_balancing": true,
-  "router_balance_strength": 0.5,
-  "router_freeze_after_epochs": 1,
+  "router_balancing": false,
+  "router_balance_strength": null,
+  "router_freeze_after_epochs": 0,
   // set to a value <1 to slow router learning; 0 is equivalent to freezing
   "router_lr_multiplier": 0.0,
   // optionally change the multiplier at a particular epoch (useful for
