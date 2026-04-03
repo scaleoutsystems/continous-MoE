@@ -94,6 +94,20 @@ def load_config(path: str) -> Dict[str, Any]:
 
     # create dataset and dataloaders first; pass seeds dict so loader can
     # use the partition-specific seed if provided
+    # Dataset-specific validation: for CORe50 domain-incremental splits the
+    # number of chosen settings must be divisible by num_partitions so that
+    # each partition (domain) receives an equal number of settings.
+    if cfg.get("dataset", "").lower() == "core50":
+        partition_type = cfg.get("partition", {}).get("type", "random")
+        if partition_type == "domainIncremental":
+            settings = cfg.get("settings", None)
+            settings_len = len(settings) if settings is not None else 11
+            num_parts = cfg.get("num_partitions", 1)
+            if settings_len % max(1, num_parts) != 0:
+                raise RuntimeError(
+                    f"For domainIncremental partitioning, number of settings ({settings_len}) must be divisible by num_partitions ({num_parts})"
+                )
+
     data_objs = create_dataloaders(cfg)
     dataset = data_objs["dataset"]
     train_loaders = data_objs["train_loaders"]

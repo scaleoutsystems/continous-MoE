@@ -7,6 +7,7 @@ import torch
 from torch.utils.data import Subset, DataLoader
 import torchvision
 from torchvision import transforms
+from PIL import Image
 
 import matplotlib.pyplot as plt
 
@@ -38,6 +39,78 @@ class AddGaussianNoise(object):
 
     def __repr__(self):
         return f"{self.__class__.__name__}(mean={self.mean}, std={self.std})"
+
+
+class Core50Dataset(torch.utils.data.Dataset):
+    """Dataset wrapper for CORe50 organised by session directories s1..s11.
+
+    It flattens selected session folders and maps object directories (o1..o50)
+    to class labels 0..49 so labels are consistent across sessions.
+    """
+
+    def __init__(self, root: str, settings: List[int] = None, transform=None):
+        core_root = os.path.join(root, "core50_128x128")
+        if not os.path.isdir(core_root):
+            raise RuntimeError(f"Core50 root not found at {core_root}")
+        # default: use all sessions found (s1..s11)
+        available_sessions = []
+        for d in sorted(os.listdir(core_root)):
+            if d.lower().startswith("s") and os.path.isdir(os.path.join(core_root, d)):
+                try:
+                    ss = int(d.lstrip("sS"))
+                    available_sessions.append(ss)
+                except Exception:
+                    continue
+        available_sessions = sorted(available_sessions)
+        if settings is None:
+            settings = available_sessions
+        # normalize settings to integers
+        settings = [int(s) for s in settings]
+
+        self.samples = []  # list of (path, label, session)
+        self.session_to_indices = {}
+        self.transform = transform
+
+        for s in settings:
+            sname = f"s{s}"
+            session_dir = os.path.join(core_root, sname)
+            if not os.path.isdir(session_dir):
+                # skip missing sessions but warn
+                print(f"Warning: Core50 session directory missing: {session_dir}")
+                continue
+            for obj in sorted(os.listdir(session_dir)):
+                obj_dir = os.path.join(session_dir, obj)
+                if not os.path.isdir(obj_dir):
+                    continue
+                # object dir names expected like o1,o2,... map to label index
+                try:
+                    onum = int(obj.lstrip('oO'))
+                    label = onum - 1
+                except Exception:
+                    # skip unexpected dirs
+                    continue
+                for fn in sorted(os.listdir(obj_dir)):
+                    if not fn.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp')):
+                        continue
+                    path = os.path.join(obj_dir, fn)
+                    idx = len(self.samples)
+                    self.samples.append((path, label, s))
+                    self.session_to_indices.setdefault(s, []).append(idx)
+
+        # create targets list for compatibility with existing code
+        self.targets = [t for (_, t, _) in self.samples]
+        # provide classes list
+        self.classes = [f"o{c+1}" for c in range(50)]
+
+    def __len__(self):
+        return len(self.samples)
+
+    def __getitem__(self, idx):
+        path, label, session = self.samples[idx]
+        img = Image.open(path).convert('RGB')
+        if self.transform is not None:
+            img = self.transform(img)
+        return img, int(label)
 
 
 def compute_mean_std(dataset, batch_size=256, num_workers=0):
@@ -184,7 +257,7 @@ def ensure_core50(root: str):
     The expected layout is ``root/core50`` but the loader does not inspect
     the internals. The user must supply the dataset manually.
     """
-    core_root = os.path.join(root, 'core50')
+    core_root = os.path.join(root, 'core50_128x128')
     if not os.path.isdir(core_root):
         raise RuntimeError(
             "Core50 directory not found under dataset_root. "
@@ -450,7 +523,10 @@ def create_dataloaders(config: Dict) -> Dict:
         dataset = torchvision.datasets.ImageFolder(img_root, transform=trf)
     elif lname == "core50":
         ensure_core50(root)
-        dataset = torchvision.datasets.ImageFolder(os.path.join(root, "core50"), transform=trf)
+        # allow selecting which CORe50 sessions/settings to include via
+        # top-level `settings` key in the config (e.g. "settings": [1,2,4,8]).
+        settings = config.get("settings", None)
+        dataset = Core50Dataset(root, settings=settings, transform=trf)
     else:
         raise ValueError(f"Unsupported dataset {name}")
 
@@ -515,6 +591,40 @@ def create_dataloaders(config: Dict) -> Dict:
 
     elif p_type == "static":
         indices_lists = static_split(available_indices, num_parts, seed=partition_seed)
+    elif p_type == "domainIncremental":
+        # Domain-incremental partitioning: intended for CORe50 where each
+        # session/setting (s1..s11) is a different location/domain. The
+        # config must supply `settings` (list of session numbers) or the
+        # dataset will default to sessions found on disk. The number of
+        # partitions must divide the number of settings evenly.
+        if lname != "core50":
+            raise ValueError("domainIncremental partitioning is only supported for CORe50 dataset")
+        settings_list = config.get("settings", None)
+        if settings_list is None:
+            # infer from dataset if possible
+            if hasattr(dataset, 'session_to_indices'):
+                settings_list = sorted(list(dataset.session_to_indices.keys()))
+            else:
+                settings_list = list(range(1, 12))
+        settings_list = [int(s) for s in settings_list]
+        if len(settings_list) % num_parts != 0:
+            raise RuntimeError(f"Number of settings ({len(settings_list)}) is not divisible by num_partitions ({num_parts})")
+        per = len(settings_list) // num_parts
+        # map sessions to available indices (exclude pretrain indices)
+        sess_to_avail = {}
+        for s in settings_list:
+            if hasattr(dataset, 'session_to_indices'):
+                sess_idxs = [i for i in dataset.session_to_indices.get(s, []) if i in available_indices]
+            else:
+                sess_idxs = [i for i in available_indices if f"/s{s}/" in getattr(dataset, 'samples', [('', 0, None)])[i][0]]
+            sess_to_avail[s] = sess_idxs
+        indices_lists = []
+        for i in range(num_parts):
+            part_settings = settings_list[i*per:(i+1)*per]
+            part_indices = []
+            for s in part_settings:
+                part_indices.extend(sess_to_avail.get(s, []))
+            indices_lists.append(part_indices)
     else:  # random or single loader
         if num_parts == 1:
             indices_lists = [available_indices.copy()]
