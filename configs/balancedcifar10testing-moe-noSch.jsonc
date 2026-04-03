@@ -108,13 +108,13 @@
   },
 
   // --------------------------------------------------------------------
-  // Scheduler (optional)
-  "scheduler": {
-    "name": "cosine", 
-    // "cosine" for CosineAnnealingLR
-    // Used for CosineAnnealing; if null, uses epochs_per_domain as T_max
-    "T_max": null
-  },
+  // // Scheduler (optional)
+  // "scheduler": {
+  //   "name": "cosine", 
+  //   // "cosine" for CosineAnnealingLR
+  //   // Used for CosineAnnealing; if null, uses epochs_per_domain as T_max
+  //   "T_max": null
+  // },
 
   "pretrain": {
     "enabled": true,

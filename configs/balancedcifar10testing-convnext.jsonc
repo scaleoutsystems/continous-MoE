@@ -59,13 +59,17 @@
     "name": "convnext_tiny", // "convnext_tiny", "resnet18", "vit_moe"
     "num_classes": 10,
     "pretrained": false,
-    // "img_size" is added automatically by the loader based on the first
-    // training batch.  You may override it here if you know the input
-    // resolution in advance; otherwise leave it unspecified.
-    // "img_size": 224,
+    // "embed_dim": 192, 
+    // "depth": 8, 
+    // "num_heads": 4, 
+    // "mlp_ratio": 4.0,
+    // // "img_size" is added automatically by the loader based on the first
+    // // training batch.  You may override it here if you know the input
+    // // resolution in advance; otherwise leave it unspecified.
+    // // "img_size": 224,
     "patch_size": 4
-    // If using vit_moe, you may specify additional keys for the MoE.
-    // Configuration separates the number of unshared and shared experts
+    // // If using vit_moe, you may specify additional keys for the MoE.
+    // // Configuration separates the number of unshared and shared experts
     // // explicitly
     // "moe_layer_indices": "every_other",
     // "moe_num_unshared_experts": 4,
@@ -125,18 +129,18 @@
     "end_factor": 1.0
   },
 
-  "epochs_per_domain": 3,
+  "epochs_per_domain": 10,
 
   // --------------------------------------------------------------------
-  // Continual learning options
-  "router_balancing": true,
-  "router_balance_strength": null,
-  "router_freeze_after_epochs": null,
-  // set to a value <1 to slow router learning; 0 is equivalent to freezing
-  "router_lr_multiplier": 0.1,
-  // optionally change the multiplier at a particular epoch (useful for
-  // scheduling); null means never change midrun
-  "router_lr_multiplier_after_epochs": 2,
+    // Continual learning options
+  // "router_balancing": true,
+  // "router_balance_strength": 0.1,
+  // "router_freeze_after_epochs": null,
+  // // set to a value <1 to slow router learning; 0 is equivalent to freezing
+  // "router_lr_multiplier": 0.1,
+  // // optionally change the multiplier at a particular epoch (useful for
+  // // scheduling); null means never change midrun
+  // "router_lr_multiplier_after_epochs": 2,
 
   // --------------------------------------------------------------------
   // Baseline reference (enable to compute FWT/intransience)
