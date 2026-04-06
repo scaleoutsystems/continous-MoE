@@ -28,7 +28,7 @@
   // For ImageNet (ILSVRC2012) use:
   // "dataset": "imagenet",
   // and place the ILSVRC2012 train/val folders under dataset_root/imagenet
-  "mini_dataset": 12000,                // integer sample count or null for full
+  // "mini_dataset": null,                // integer sample count or null for full
   "resize": 0, // 0 = no resize. This resize affects all images
 
   "augmentation": {

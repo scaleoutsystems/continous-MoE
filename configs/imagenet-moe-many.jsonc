@@ -88,9 +88,9 @@
     // Configuration separates the number of unshared and shared experts
     // explicitly
     "moe_layer_indices": "back_half_every_other",
-    "moe_num_unshared_experts": 4,
+    "moe_num_unshared_experts": 8,
     "moe_num_shared_experts": 1,
-    "moe_top_k": 1, // only selects between unshared, shared are always used
+    "moe_top_k": 2, // only selects between unshared, shared are always used
     "moe_route_with_cls_token": true
   },
 
@@ -102,7 +102,7 @@
     // set to true to enable per-class weighting based on partition distribution
     "weighted": true,
     // upper limit applied when computing inverse-frequency weights
-    "weight_upper_limit": 20.0,
+    "weight_upper_limit": 5.0,
     // if true new weights will be averaged with the previous set
     "weight_cumulative": false,
 
@@ -112,8 +112,8 @@
     // from the current partition's class counts, identical to the behaviour
     // of the weighted cross-entropy loss.
 
-    "alpha": "auto",
-    "gamma": 2.0
+    // "alpha": "auto",
+    // "gamma": 2.0
   },
 
   // --------------------------------------------------------------------
