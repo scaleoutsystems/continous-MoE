@@ -18,7 +18,7 @@ def _compute_weights(counts: torch.Tensor, upper_limit: float):
         # no samples at all - fall back to uniform
         return torch.ones_like(counts)
     # add small epsilon to avoid divide-by-zero
-    weights = total / (counts + 1e-6)
+    weights = total / ((counts + 1e-6) * len(counts))
     if upper_limit is not None:
         weights = torch.clamp(weights, max=upper_limit)
     return weights
