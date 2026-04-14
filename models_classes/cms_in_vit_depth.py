@@ -64,7 +64,7 @@ import torch.nn.functional as F
 # CMS-FFN BLOCK
 # -----------------------------
 class CMSFFN(nn.Module):
-    def __init__(self, dim, hidden_dim, update_freq=8):
+    def __init__(self, dim, hidden_dim, update_freq=1):
         super().__init__()
 
         self.fast = nn.Sequential(
@@ -84,39 +84,25 @@ class CMSFFN(nn.Module):
 
     def forward(self, x):
         g = torch.sigmoid(self.gate(x))
-
-        fast_out = self.fast(x)
-        slow_out = self.slow(x).detach()
-
-        return g * fast_out + (1 - g) * slow_out
-
-    def fast_parameters(self):
-        return list(self.fast.parameters()) + list(self.gate.parameters())
-
-    def slow_parameters(self):
-        return list(self.slow.parameters())
+        return g * self.fast(x) + (1 - g) * self.slow(x).detach()
 
 
 # -----------------------------
 # TRANSFORMER BLOCK
 # -----------------------------
 class Block(nn.Module):
-    def __init__(self, dim, num_heads, update_freq=8):
+    def __init__(self, dim, heads, update_freq):
         super().__init__()
 
         self.norm1 = nn.LayerNorm(dim)
-        self.attn = nn.MultiheadAttention(dim, num_heads, batch_first=True)
+        self.attn = nn.MultiheadAttention(dim, heads, batch_first=True)
 
         self.norm2 = nn.LayerNorm(dim)
         self.ffn = CMSFFN(dim, dim * 4, update_freq)
 
     def forward(self, x):
-        h = self.norm1(x)
-        x = x + self.attn(h, h, h)[0]
-
-        h = self.norm2(x)
-        x = x + self.ffn(h)
-
+        x = x + self.attn(self.norm1(x), self.norm1(x), self.norm1(x))[0]
+        x = x + self.ffn(self.norm2(x))
         return x
 
 
@@ -124,14 +110,14 @@ class Block(nn.Module):
 # ViT MODEL (DEPTH-WISE CMS)
 # -----------------------------
 class CMSViT(nn.Module):
-    def __init__(self, dim=256, depth=6, num_heads=8, num_classes=10):
+    def __init__(self, dim=256, depth=6, heads=8, num_classes=10):
         super().__init__()
 
         self.patch_embed = nn.Linear(768, dim)
         self.cls_token = nn.Parameter(torch.zeros(1, 1, dim))
 
         self.blocks = nn.ModuleList([
-            Block(dim, num_heads, update_freq=2 ** i)
+            Block(dim, heads, update_freq=2 ** i)
             for i in range(depth)
         ])
 
@@ -148,77 +134,65 @@ class CMSViT(nn.Module):
         for blk in self.blocks:
             x = blk(x)
 
-        x = self.norm(x[:, 0])
-        return self.head(x)
+        return self.head(self.norm(x[:, 0]))
 
 
-# # -----------------------------
-# # OPTIMIZER SETUP
-# # -----------------------------
+### Training example setup:
 # model = CMSViT()
-# ce_loss = nn.CrossEntropyLoss()
+# model.train()
 
-# # FAST optimizer (all fast + gate params)
+# ce = nn.CrossEntropyLoss()
+
+# # -----------------------
+# # FAST optimizer
+# # -----------------------
 # fast_params = []
 # for blk in model.blocks:
-#     fast_params += blk.ffn.fast_parameters()
+#     fast_params += list(blk.ffn.fast.parameters()) + list(blk.ffn.gate.parameters())
 
-# optimizer_fast = torch.optim.Adam(fast_params, lr=3e-4)
+# opt_fast = torch.optim.Adam(fast_params, lr=3e-4)
 
-# # SLOW optimizers (ONE PER BLOCK = correct CMS separation)
-# slow_optimizers = []
-# for blk in model.blocks:
-#     opt = torch.optim.Adam(blk.ffn.slow_parameters(), lr=1e-4)
-#     slow_optimizers.append(opt)
+# # -----------------------
+# # SLOW optimizers (per block)
+# # -----------------------
+# opt_slow = [
+#     torch.optim.Adam(blk.ffn.slow.parameters(), lr=1e-4)
+#     for blk in model.blocks
+# ]
 
-# # counters for update scheduling
-# step_counter = 0
+# global_step = 0
 
+# for x, y in loader:
+#     global_step += 1
 
-# # -----------------------------
-# # TRAINING LOOP
-# # -----------------------------
-# for step, (x, y) in enumerate(loader):
-#     step_counter += 1
-
-#     # ---------------------
-#     # forward + main loss
-#     # ---------------------
+#     # -------------------------
+#     # forward (SINGLE PASS)
+#     # -------------------------
 #     logits = model(x)
-#     loss_main = ce_loss(logits, y)
+#     loss_main = ce(logits, y)
 
-#     # ---------------------
-#     # auxiliary consistency loss
-#     # ---------------------
-#     aux = 0.0
-#     for blk in model.blocks:
-#         fast_out = blk.ffn.fast(x)
-#         with torch.no_grad():
-#             slow_out = blk.ffn.slow(x)
-
-#         aux += F.mse_loss(fast_out, slow_out)
-
-#     total_loss = loss_main + 0.1 * aux
-
-#     # ---------------------
+#     # -------------------------
 #     # FAST UPDATE (every step)
-#     # ---------------------
-#     optimizer_fast.zero_grad()
-#     total_loss.backward(retain_graph=True)
-#     optimizer_fast.step()
+#     # -------------------------
+#     opt_fast.zero_grad()
+#     loss_main.backward(retain_graph=True)
+#     opt_fast.step()
 
-#     # ---------------------
-#     # SLOW UPDATES (depth-wise frequencies)
-#     # ---------------------
+#     # -------------------------
+#     # SLOW UPDATE (multi-timescale)
+#     # -------------------------
 #     for i, blk in enumerate(model.blocks):
 #         freq = blk.ffn.update_freq
 
-#         if step_counter % freq == 0:
-#             slow_optimizers[i].zero_grad()
+#         if global_step % freq == 0:
+#             opt_slow[i].zero_grad()
 
-#             # IMPORTANT: recompute loss graph for slow update
-#             logits = model(x)
-#             slow_loss = ce_loss(logits, y)
+#             with torch.no_grad():
+#                 slow_pred = blk.ffn.slow(blk.norm2(x))
+
+#             fast_pred = blk.ffn.fast(blk.norm2(x))
+
+#             slow_loss = F.mse_loss(fast_pred, slow_pred)
 
 #             slow_loss.backward()
-#             slow_optimizers[i].step()
+#             opt_slow[i].step()
