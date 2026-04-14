@@ -15,10 +15,6 @@ import torch.nn as nn
     #                     │
     #                 Output mix
 
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-
 # =========================
 # CMS MULTI-SLOW FFN ViT
 # =========================

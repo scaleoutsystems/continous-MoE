@@ -177,13 +177,19 @@ class MoE_CMS_FFN(nn.Module):
         load = torch.zeros(self.num_experts, device=x.device)
 
         for k in range(self.top_k):
-            idx = topk_idx[..., k]
-            w = topk_val[..., k].unsqueeze(-1)
+            idx = topk_idx[..., k]              # (B, N)
+            w = topk_val[..., k].unsqueeze(-1) # (B, N, 1)
 
             for b in range(B):
                 for n in range(N):
-                    e = idx[b, n].item()
-                    out[b, n] += w[b, n] * self.experts[e](x[b:b+1, n:n+1])
+                    e = int(idx[b, n])  # ensure int
+
+                    token = x[b:b+1, n:n+1, :]          # (1,1,D)
+                    expert_out = self.experts[e](token) # (1,1,D)
+                    expert_out = expert_out.squeeze(0).squeeze(0)  # (D)
+
+                    out[b, n] += w[b, n] * expert_out
+
                     load[e] += 1
 
         capacity = (B * N) / self.num_experts
@@ -249,26 +255,31 @@ class CMS_MoE_ViT(nn.Module):
         x = self.norm(x[:, 0])
         return self.head(x), total_cap
     
-# # Optimizer setup
+
+### Example training setup:
 # model = CMS_MoE_ViT()
 # model.train()
 
 # ce = nn.CrossEntropyLoss()
 
 # # -------------------------
-# # 1. FAST OPTIMIZER
+# # 1. FAST OPTIMIZER (WITH ROUTER LR SCALING)
 # # -------------------------
+# router_params = []
 # fast_params = []
 
 # for blk in model.blocks:
-#     # router is fast
-#     fast_params += list(blk.ffn.router.parameters())
+#     # separate router params
+#     router_params += list(blk.ffn.router.parameters())
 
 #     for expert in blk.ffn.experts:
 #         fast_params += list(expert.fast.parameters())
 #         fast_params += list(expert.gate.parameters())
 
-# opt_fast = torch.optim.Adam(fast_params, lr=3e-4)
+# opt_fast = torch.optim.Adam([
+#     {"params": fast_params, "lr": 3e-4},
+#     {"params": router_params, "lr": 3e-5},  # 0.1× LR
+# ])
 
 # # -------------------------
 # # 2. SLOW OPTIMIZERS (PER EXPERT GROUP)
@@ -280,7 +291,6 @@ class CMS_MoE_ViT(nn.Module):
 #         slow_opts.append(
 #             torch.optim.Adam(expert.slow.parameters(), lr=1e-4)
 #         )
-
 
 # # -------------------------
 # # TRAINING LOOP
@@ -311,7 +321,7 @@ class CMS_MoE_ViT(nn.Module):
 #     # ---------------------
 #     for i, opt in enumerate(slow_opts):
 
-#         freq = 2 ** ((i % 3) + 1)  # shared CMS schedule per expert index
+#         freq = 2 ** ((i % 3) + 1) # shared CMS schedule per expert index
 
 #         if global_step % freq == 0:
 
