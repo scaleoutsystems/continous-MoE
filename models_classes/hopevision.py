@@ -146,10 +146,12 @@ import torch.nn.functional as F
     # │ logits = W · h(x, c(x))               │
     # └────────────────────────────────────────┘
 
+# -------------------------
+# ViT-style encoder
+# -------------------------
 class ViTEncoder(nn.Module):
     def __init__(self, dim=256):
         super().__init__()
-
         self.patch_embed = nn.Conv2d(3, dim, kernel_size=16, stride=16)
 
         encoder_layer = nn.TransformerEncoderLayer(
@@ -158,33 +160,56 @@ class ViTEncoder(nn.Module):
             dim_feedforward=4 * dim,
             batch_first=True
         )
-
         self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=6)
 
     def forward(self, x):
-        # x: [B, 3, H, W]
         x = self.patch_embed(x)          # [B, D, H', W']
         x = x.flatten(2).transpose(1, 2) # [B, N, D]
         x = self.transformer(x)
-        return x.mean(dim=1)             # global feature [B, D]
-    
+        return x.mean(dim=1)             # [B, D]
+
+
+# -------------------------
+# Multi-head CMS
+# -------------------------
 class CMS(nn.Module):
-    def __init__(self, dim=256, memory_size=1024):
+    def __init__(self, dim=256, memory_size=1024, num_heads=8):
         super().__init__()
         self.memory = nn.Parameter(torch.randn(memory_size, dim))
-        self.memory_size = memory_size
+        self.num_heads = num_heads
+        self.head_dim = dim // num_heads
+
+        self.q_proj = nn.Linear(dim, dim)
+        self.k_proj = nn.Linear(dim, dim)
+        self.v_proj = nn.Linear(dim, dim)
+
+        self.out_proj = nn.Linear(dim, dim)
 
     def forward(self, x):
         # x: [B, D]
-        sim = torch.matmul(x, self.memory.T)  # [B, M]
-        attn = F.softmax(sim, dim=-1)
-        context = torch.matmul(attn, self.memory)  # [B, D]
+        B, D = x.shape
+        M = self.memory  # [S, D]
+
+        Q = self.q_proj(x).view(B, self.num_heads, self.head_dim)
+        K = self.k_proj(M).view(-1, self.num_heads, self.head_dim)
+        V = self.v_proj(M).view(-1, self.num_heads, self.head_dim)
+
+        # [B, H, d] @ [S, H, d] -> [B, H, S]
+        attn_scores = torch.einsum("bhd,shd->bhs", Q, K)
+        attn = F.softmax(attn_scores / (self.head_dim ** 0.5), dim=-1)
+
+        # [B, H, S] @ [S, H, d] -> [B, H, d]
+        context = torch.einsum("bhs,shd->bhd", attn, V)
+
+        context = context.reshape(B, D)
+        context = self.out_proj(context)
+
         return context, attn
 
     @torch.no_grad()
     def update(self, x, lr=0.05):
-        # simple competitive update (winner-takes-most)
-        sim = torch.matmul(x, self.memory.T)
+        # simple prototype update (mean-like EMA)
+        sim = torch.matmul(x, self.memory.T)  # [B, S]
         idx = sim.argmax(dim=-1)
 
         for b in range(x.size(0)):
@@ -192,43 +217,48 @@ class CMS(nn.Module):
                 (1 - lr) * self.memory[idx[b]] + lr * x[b]
             )
 
+
+# -------------------------
+# Fast adaptation module (now uses attention)
+# -------------------------
 class FastAdapter(nn.Module):
-    def __init__(self, dim=256, num_classes=10):
+    def __init__(self, dim=256, num_classes=10, memory_size=1024):
         super().__init__()
 
-        self.norm = nn.LayerNorm(dim)
-
         self.mlp = nn.Sequential(
-            nn.Linear(dim * 2, dim),
+            nn.Linear(dim * 2 + memory_size, dim),
             nn.ReLU(),
             nn.Linear(dim, dim)
         )
 
         self.classifier = nn.Linear(dim, num_classes)
 
-    def forward(self, x, context):
-        # fuse memory + features
-        h = torch.cat([x, context], dim=-1)
+    def forward(self, x, context, attn):
+        # flatten attention for conditioning
+        attn_flat = attn.flatten(start_dim=1)
+
+        h = torch.cat([x, context, attn_flat], dim=-1)
         h = self.mlp(h)
-        logits = self.classifier(h)
-        return logits
-    
+
+        return self.classifier(h)
+
+
+# -------------------------
+# Full HOPE-Vision model
+# -------------------------
 class HOPEVision(nn.Module):
-    def __init__(self, num_classes=10, dim=256):
+    def __init__(self, num_classes=10, dim=256, memory_size=1024):
         super().__init__()
 
         self.encoder = ViTEncoder(dim)
-        self.cms = CMS(dim)
-        self.adapter = FastAdapter(dim, num_classes)
+        self.cms = CMS(dim, memory_size=memory_size)
+        self.adapter = FastAdapter(dim, num_classes, memory_size=memory_size)
 
     def forward(self, x):
         features = self.encoder(x)
-
         context, attn = self.cms(features)
-
-        logits = self.adapter(features, context)
-
-        return logits, features, context
+        logits = self.adapter(features, context, attn)
+        return logits, features, context, attn
     
 # Example training loop:
 # model = HOPEVision(num_classes=10)
