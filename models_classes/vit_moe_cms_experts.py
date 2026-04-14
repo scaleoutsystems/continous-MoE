@@ -117,6 +117,7 @@ class CMSExpert(nn.Module):
 
     def forward(self, x):
         g = torch.sigmoid(self.gate(x))
+
         fast_out = self.fast(x)
 
         slow_out = 0.0
@@ -130,21 +131,19 @@ class CMSExpert(nn.Module):
 # -------------------------
 # Noisy Top-k MoE Router
 # -------------------------
-class NoisyTopKRouter(nn.Module):
+class NoisyRouter(nn.Module):
     def __init__(self, dim, num_experts, noise_std=1.0):
         super().__init__()
-        self.w = nn.Linear(dim, num_experts)
+        self.linear = nn.Linear(dim, num_experts)
         self.noise_std = noise_std
 
-    def forward(self, x, training=True):
-        logits = self.w(x)
+    def forward(self, x):
+        logits = self.linear(x)
 
-        if training:
-            noise = torch.randn_like(logits) * self.noise_std
-            logits = logits + noise
+        if self.training:
+            logits = logits + torch.randn_like(logits) * self.noise_std
 
-        probs = F.softmax(logits, dim=-1)
-        return probs
+        return F.softmax(logits, dim=-1)
 
 
 # -------------------------
@@ -157,50 +156,40 @@ class MoE_CMS_FFN(nn.Module):
         self.num_experts = num_experts
         self.top_k = top_k
 
-        self.router = NoisyTopKRouter(dim, num_experts)
+        self.router = NoisyRouter(dim, num_experts)
 
         self.experts = nn.ModuleList([
             CMSExpert(dim, hidden_dim, num_slow)
             for _ in range(num_experts)
         ])
 
-        # load balancing auxiliary loss scale
-        self.lb_scale = 0.01
-
-    def forward(self, x, training=True):
+    def forward(self, x):
         B, N, D = x.shape
 
-        probs = self.router(x, training=training)
+        probs = self.router(x)
 
-        topk_vals, topk_idx = torch.topk(probs, self.top_k, dim=-1)
-
-        # normalize top-k weights
-        topk_vals = topk_vals / (topk_vals.sum(dim=-1, keepdim=True) + 1e-9)
+        topk_val, topk_idx = torch.topk(probs, self.top_k, dim=-1)
+        topk_val = topk_val / (topk_val.sum(dim=-1, keepdim=True) + 1e-9)
 
         out = torch.zeros_like(x)
 
-        # track expert load for capacity loss
-        expert_load = torch.zeros(self.num_experts, device=x.device)
+        # capacity tracking
+        load = torch.zeros(self.num_experts, device=x.device)
 
         for k in range(self.top_k):
-            idx = topk_idx[..., k]          # (B, N)
-            weight = topk_vals[..., k].unsqueeze(-1)
+            idx = topk_idx[..., k]
+            w = topk_val[..., k].unsqueeze(-1)
 
             for b in range(B):
                 for n in range(N):
                     e = idx[b, n].item()
-                    expert_out = self.experts[e](x[b:b+1, n:n+1, :])
-                    out[b:b+1, n:n+1, :] += weight[b:b+1, n:n+1, :] * expert_out
-                    expert_load[e] += 1
+                    out[b, n] += w[b, n] * self.experts[e](x[b:b+1, n:n+1])
+                    load[e] += 1
 
-        # capacity loss (Switch Transformer style)
         capacity = (B * N) / self.num_experts
-        capacity_loss = torch.mean(
-            F.relu(expert_load - capacity)
-        )
+        capacity_loss = F.relu(load - capacity).mean()
 
         return out, capacity_loss
-
 
 # -------------------------
 # Transformer Block
@@ -215,12 +204,12 @@ class Block(nn.Module):
         self.norm2 = nn.LayerNorm(dim)
         self.ffn = MoE_CMS_FFN(dim, dim * 4)
 
-    def forward(self, x, training=True):
+    def forward(self, x):
         h = self.norm1(x)
         x = x + self.attn(h, h, h)[0]
 
         h = self.norm2(x)
-        ffn_out, cap_loss = self.ffn(h, training=training)
+        ffn_out, cap_loss = self.ffn(h)
 
         x = x + ffn_out
         return x, cap_loss
@@ -244,41 +233,94 @@ class CMS_MoE_ViT(nn.Module):
         self.norm = nn.LayerNorm(dim)
         self.head = nn.Linear(dim, num_classes)
 
-    def forward(self, x, training=True):
+    def forward(self, x):
         x = self.patch_embed(x)
 
         B = x.size(0)
         cls = self.cls.expand(B, -1, -1)
         x = torch.cat([cls, x], dim=1)
 
-        total_cap_loss = 0.0
+        total_cap = 0.0
 
         for blk in self.blocks:
-            x, cap_loss = blk(x, training=training)
-            total_cap_loss = total_cap_loss + cap_loss
+            x, cap = blk(x)
+            total_cap += cap
 
         x = self.norm(x[:, 0])
-        return self.head(x), total_cap_loss
-
-
-# # -------------------------
-# # TRAINING LOOP
-# # -------------------------
+        return self.head(x), total_cap
+    
+# # Optimizer setup
 # model = CMS_MoE_ViT()
 # model.train()
 
 # ce = nn.CrossEntropyLoss()
 
-# optimizer = torch.optim.Adam(model.parameters(), lr=3e-4)
+# # -------------------------
+# # 1. FAST OPTIMIZER
+# # -------------------------
+# fast_params = []
 
-# for step, (x, y) in enumerate(loader):
+# for blk in model.blocks:
+#     # router is fast
+#     fast_params += list(blk.ffn.router.parameters())
 
-#     logits, cap_loss = model(x, training=True)
+#     for expert in blk.ffn.experts:
+#         fast_params += list(expert.fast.parameters())
+#         fast_params += list(expert.gate.parameters())
+
+# opt_fast = torch.optim.Adam(fast_params, lr=3e-4)
+
+# # -------------------------
+# # 2. SLOW OPTIMIZERS (PER EXPERT GROUP)
+# # -------------------------
+# slow_opts = []
+
+# for blk in model.blocks:
+#     for expert in blk.ffn.experts:
+#         slow_opts.append(
+#             torch.optim.Adam(expert.slow.parameters(), lr=1e-4)
+#         )
+
+
+# # -------------------------
+# # TRAINING LOOP
+# # -------------------------
+# global_step = 0
+# lambda_cap = 0.01
+
+# for x, y in loader:
+#     global_step += 1
+
+#     # ---------------------
+#     # forward
+#     # ---------------------
+#     logits, cap_loss = model(x)
 
 #     loss = ce(logits, y)
+#     total_loss = loss + lambda_cap * cap_loss
 
-#     total_loss = loss + model.blocks[0].ffn.lb_scale * cap_loss
+#     # ---------------------
+#     # FAST UPDATE
+#     # ---------------------
+#     opt_fast.zero_grad()
+#     total_loss.backward(retain_graph=True)
+#     opt_fast.step()
 
-#     optimizer.zero_grad()
-#     total_loss.backward()
-#     optimizer.step()
+#     # ---------------------
+#     # SLOW UPDATE (MULTI-SCALE)
+#     # ---------------------
+#     for i, opt in enumerate(slow_opts):
+
+#         freq = 2 ** ((i % 3) + 1)  # shared CMS schedule per expert index
+
+#         if global_step % freq == 0:
+
+#             opt.zero_grad()
+
+#             # recompute forward for stable slow gradient
+#             logits, cap_loss = model(x)
+
+#             slow_loss = ce(logits, y) + lambda_cap * cap_loss
+
+#             slow_loss.backward()
+#             opt.step()
