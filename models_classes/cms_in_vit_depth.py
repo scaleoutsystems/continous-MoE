@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 # Overall data flow:
 # Input Image
@@ -59,52 +60,55 @@ import torch.nn as nn
 #         CE (task)
 #       + λ * consistency(fast vs slow)
 
-
-
-# --- CMS-style FFN block ---
+# -----------------------------
+# CMS-FFN BLOCK
+# -----------------------------
 class CMSFFN(nn.Module):
     def __init__(self, dim, hidden_dim, update_freq=8):
         super().__init__()
+
         self.fast = nn.Sequential(
             nn.Linear(dim, hidden_dim),
             nn.GELU(),
             nn.Linear(hidden_dim, dim),
         )
+
         self.slow = nn.Sequential(
             nn.Linear(dim, hidden_dim),
             nn.GELU(),
             nn.Linear(hidden_dim, dim),
         )
 
-        # gating (context-conditioned mixing)
         self.gate = nn.Linear(dim, 1)
-
         self.update_freq = update_freq
-        self.step = 0
 
     def forward(self, x):
-        g = torch.sigmoid(self.gate(x))  # (B, N, 1)
+        g = torch.sigmoid(self.gate(x))
 
         fast_out = self.fast(x)
-        slow_out = self.slow(x).detach()  # stop gradient unless updated
+        slow_out = self.slow(x).detach()
 
         return g * fast_out + (1 - g) * slow_out
-
-    def slow_parameters(self):
-        return self.slow.parameters()
 
     def fast_parameters(self):
         return list(self.fast.parameters()) + list(self.gate.parameters())
 
-# --- Transformer block ---
+    def slow_parameters(self):
+        return list(self.slow.parameters())
+
+
+# -----------------------------
+# TRANSFORMER BLOCK
+# -----------------------------
 class Block(nn.Module):
-    def __init__(self, dim, num_heads, mlp_ratio=4.0, update_freq=8):
+    def __init__(self, dim, num_heads, update_freq=8):
         super().__init__()
+
         self.norm1 = nn.LayerNorm(dim)
         self.attn = nn.MultiheadAttention(dim, num_heads, batch_first=True)
-        self.norm2 = nn.LayerNorm(dim)
 
-        self.ffn = CMSFFN(dim, int(dim * mlp_ratio), update_freq)
+        self.norm2 = nn.LayerNorm(dim)
+        self.ffn = CMSFFN(dim, dim * 4, update_freq)
 
     def forward(self, x):
         h = self.norm1(x)
@@ -112,17 +116,22 @@ class Block(nn.Module):
 
         h = self.norm2(x)
         x = x + self.ffn(h)
+
         return x
 
-# --- ViT classifier ---
+
+# -----------------------------
+# ViT MODEL (DEPTH-WISE CMS)
+# -----------------------------
 class CMSViT(nn.Module):
     def __init__(self, dim=256, depth=6, num_heads=8, num_classes=10):
         super().__init__()
-        self.patch_embed = nn.Linear(768, dim)  # assume flattened patches
+
+        self.patch_embed = nn.Linear(768, dim)
         self.cls_token = nn.Parameter(torch.zeros(1, 1, dim))
 
         self.blocks = nn.ModuleList([
-            Block(dim, num_heads, update_freq=2**i)
+            Block(dim, num_heads, update_freq=2 ** i)
             for i in range(depth)
         ])
 
@@ -142,97 +151,74 @@ class CMSViT(nn.Module):
         x = self.norm(x[:, 0])
         return self.head(x)
 
-# Example training loop
 
+# # -----------------------------
+# # OPTIMIZER SETUP
+# # -----------------------------
 # model = CMSViT()
 # ce_loss = nn.CrossEntropyLoss()
 
-# # separate optimizers
+# # FAST optimizer (all fast + gate params)
 # fast_params = []
-# slow_param_groups = []
-
 # for blk in model.blocks:
 #     fast_params += blk.ffn.fast_parameters()
-#     slow_param_groups.append({
-#         "params": blk.ffn.slow_parameters(),
-#         "freq": blk.ffn.update_freq,
-#         "counter": 0
-#     })
 
 # optimizer_fast = torch.optim.Adam(fast_params, lr=3e-4)
-# optimizer_slow = torch.optim.Adam(
-#     [p for g in slow_param_groups for p in g["params"]],
-#     lr=1e-4
-# )
 
+# # SLOW optimizers (ONE PER BLOCK = correct CMS separation)
+# slow_optimizers = []
+# for blk in model.blocks:
+#     opt = torch.optim.Adam(blk.ffn.slow_parameters(), lr=1e-4)
+#     slow_optimizers.append(opt)
+
+# # counters for update scheduling
+# step_counter = 0
+
+
+# # -----------------------------
+# # TRAINING LOOP
+# # -----------------------------
 # for step, (x, y) in enumerate(loader):
+#     step_counter += 1
+
+#     # ---------------------
+#     # forward + main loss
+#     # ---------------------
 #     logits = model(x)
+#     loss_main = ce_loss(logits, y)
 
-#     # --- main task loss ---
-#     loss = ce_loss(logits, y)
-
-#     # --- auxiliary consistency loss ---
+#     # ---------------------
+#     # auxiliary consistency loss
+#     # ---------------------
 #     aux = 0.0
 #     for blk in model.blocks:
-#         ffn = blk.ffn
+#         fast_out = blk.ffn.fast(x)
 #         with torch.no_grad():
-#             slow_out = ffn.slow(x)
-#         fast_out = ffn.fast(x)
+#             slow_out = blk.ffn.slow(x)
+
 #         aux += F.mse_loss(fast_out, slow_out)
 
-#     total_loss = loss + 0.1 * aux
+#     total_loss = loss_main + 0.1 * aux
 
-#     # --- update fast weights every step ---
+#     # ---------------------
+#     # FAST UPDATE (every step)
+#     # ---------------------
 #     optimizer_fast.zero_grad()
 #     total_loss.backward(retain_graph=True)
 #     optimizer_fast.step()
 
-#     # --- update slow weights at different frequencies ---
-#     for g in slow_param_groups:
-#         g["counter"] += 1
-#         if g["counter"] % g["freq"] == 0:
-#             optimizer_slow.zero_grad()
-#             loss.backward()  # only main loss
-#             optimizer_slow.step()
+#     # ---------------------
+#     # SLOW UPDATES (depth-wise frequencies)
+#     # ---------------------
+#     for i, blk in enumerate(model.blocks):
+#         freq = blk.ffn.update_freq
 
+#         if step_counter % freq == 0:
+#             slow_optimizers[i].zero_grad()
 
-### Pseudo-code algo:
-# Algorithm 1: Layer-wise Multi-Timescale CMS-Transformer
+#             # IMPORTANT: recompute loss graph for slow update
+#             logits = model(x)
+#             slow_loss = ce_loss(logits, y)
 
-# Input: dataset D, model f with L Transformer blocks
-#        update frequencies {F1, F2, ..., FL}
-#        loss function L(·), optimizer θ_fast, θ_slow
-
-# Initialize:
-#     for each block l ∈ {1..L}:
-#         initialize fast FFN parameters θ_f^l
-#         initialize slow FFN parameters θ_s^l
-#         set step counter t = 0
-
-# for each minibatch (x, y) in D do
-#     t ← t + 1
-
-#     # Forward pass
-#     h ← PatchEmbed(x)
-#     for l = 1..L do
-#         h ← TransformerBlock_l(h)
-
-#     logits ← Classifier(h)
-#     loss_main ← CrossEntropy(logits, y)
-
-#     # Optional consistency loss
-#     loss_aux ← Σ_l || FFN_fast^l(h) − FFN_slow^l(h) ||^2
-
-#     loss ← loss_main + λ * loss_aux
-
-#     # Update fast parameters (every step)
-#     θ_fast ← OptimizerStep(∇_θ_fast loss)
-
-#     # Update slow parameters at layer-dependent frequencies
-#     for l = 1..L do
-#         if t mod F_l == 0 then
-#             θ_slow^l ← OptimizerStep(∇_θ_slow^l loss_main)
-#         end if
-#     end for
-
-# end for
+#             slow_loss.backward()
+#             slow_optimizers[i].step()
