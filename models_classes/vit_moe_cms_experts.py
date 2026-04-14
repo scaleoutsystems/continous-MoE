@@ -113,10 +113,12 @@ class CMSExpert(nn.Module):
             for _ in range(num_slow)
         ])
 
-        self.gate = nn.Linear(dim, 1)
+        # 2 logits: [fast, slow]
+        self.gate = nn.Linear(dim, 2)
 
     def forward(self, x):
-        g = torch.sigmoid(self.gate(x))
+        # (B, N, 2)
+        g = torch.softmax(self.gate(x), dim=-1)
 
         fast_out = self.fast(x)
 
@@ -125,7 +127,11 @@ class CMSExpert(nn.Module):
             slow_out = slow_out + s(x).detach()
         slow_out = slow_out / len(self.slow)
 
-        return g * fast_out + (1 - g) * slow_out
+        # split weights
+        g_fast = g[..., 0].unsqueeze(-1)
+        g_slow = g[..., 1].unsqueeze(-1)
+
+        return g_fast * fast_out + g_slow * slow_out
 
 
 # -------------------------
