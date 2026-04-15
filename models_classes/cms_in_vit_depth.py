@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-
+# One brain, multiple memory speed depths. No MoE outside of the split rates. Ensemble.
 # Overall data flow:
 # Input Image
 #     │

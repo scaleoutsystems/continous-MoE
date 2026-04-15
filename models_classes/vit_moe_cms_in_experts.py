@@ -2,6 +2,11 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+# Makes an exemplar learning system in each expert
+# Exemplars are EMA of distributions
+# Image level routing to be added.
+# Also need to align forward pass and backward pass
+
 # -------------------------
 # ViT Encoder
 # -------------------------
@@ -173,7 +178,7 @@ def train_step(model, optimizer, x, y, lambda_entropy=0.01):
     optimizer.step()
 
     # -------------------------------------------------
-    # ROUTING-CONSISTENT CMS UPDATES (FINAL CORRECT FORM)
+    # ROUTING-CONSISTENT CMS UPDATES
     # -------------------------------------------------
     with torch.no_grad():
         x_embed = model.encoder(x)

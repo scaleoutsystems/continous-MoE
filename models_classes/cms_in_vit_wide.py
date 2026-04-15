@@ -1,22 +1,9 @@
 import torch
 import torch.nn as nn
-
-    #              CMS Multi-FFN
-
-    #                   Input
-    #                     │
-    #     ┌───────────────┼────────────────┼────────────────┐
-    #     │               │                │
-    #  Fast (t=1)    Slow (t=2^1)   Slow (t=2^2)   Slow (t=2^3)
-    #     │               │                │                │
-    #     └───────┬───────┴───────┬────────┴───────┬────────┘
-    #             │               │                │
-    #          Gating (softmax over all learners)
-    #                     │
-    #                 Output mix
+import torch.nn.functional as F
 
 # =========================
-# CMS MULTI-SLOW FFN ViT
+# CMS MULTI-SLOW FFN ViT (FIXED)
 # =========================
 
 class CMSMultiFFN(nn.Module):
@@ -32,7 +19,7 @@ class CMSMultiFFN(nn.Module):
             nn.Linear(hidden_dim, dim),
         )
 
-        # slow learners (multi-timescale memory)
+        # slow learners (updated via separate loss only)
         self.slow = nn.ModuleList([
             nn.Sequential(
                 nn.Linear(dim, hidden_dim),
@@ -42,22 +29,22 @@ class CMSMultiFFN(nn.Module):
             for _ in range(num_slow)
         ])
 
-        # gating over fast + slow experts
+        # gating over experts
         self.gate = nn.Linear(dim, num_slow + 1)
 
-        # multiplicative frequency schedule: 2^1, 2^2, ...
         self.freqs = [base_freq ** (i + 1) for i in range(num_slow)]
 
     def forward(self, x):
         fast_out = self.fast(x)
 
+        # IMPORTANT: slow experts do NOT receive gradient from main loss
         slow_outs = [s(x).detach() for s in self.slow]
 
-        outs = torch.stack([fast_out] + slow_outs, dim=0)  # (K+1,B,N,D)
+        outs = torch.stack([fast_out] + slow_outs, dim=2)  # (B, N, K, D)
 
-        g = torch.softmax(self.gate(x), dim=-1).unsqueeze(-1)
+        g = torch.softmax(self.gate(x), dim=-1).unsqueeze(-1)  # (B,N,K+1,1)
 
-        out = (g * outs.permute(1, 2, 0, 3)).sum(dim=2)
+        out = (g * outs).sum(dim=2)
         return out
 
 
@@ -113,14 +100,14 @@ class CMSViT(nn.Module):
 
 # criterion = nn.CrossEntropyLoss()
 
-# # fast optimizer (all non-slow params)
+# # fast params (everything except slow experts)
 # fast_params = [
 #     p for n, p in model.named_parameters()
 #     if "slow" not in n
 # ]
 # optimizer_fast = torch.optim.Adam(fast_params, lr=3e-4)
 
-# # slow optimizers grouped by frequency
+# # slow optimizers per frequency group
 # slow_param_groups = {}
 # for blk in model.blocks:
 #     for k, freq in enumerate(blk.ffn.freqs):
@@ -133,8 +120,9 @@ class CMSViT(nn.Module):
 #     for f, params in slow_param_groups.items()
 # }
 
+
 # # =========================
-# # TRAINING LOOP
+# # TRAINING LOOP (FIXED)
 # # =========================
 
 # global_step = 0
@@ -143,45 +131,43 @@ class CMSViT(nn.Module):
 #     global_step += 1
 
 #     # ---------------------
-#     # forward + main loss
+#     # MAIN LOSS (fast model)
 #     # ---------------------
 #     logits = model(x)
 #     loss = criterion(logits, y)
 
-#     # ---------------------
-#     # fast update (every step)
-#     # ---------------------
 #     optimizer_fast.zero_grad()
-#     loss.backward(retain_graph=True)
+#     loss.backward()
 #     optimizer_fast.step()
 
 #     # ---------------------
-#     # slow consistency loss
+#     # SLOW CONSISTENCY LOSS
+#     # (isolated graph, slow-only gradients)
 #     # ---------------------
-#     slow_loss = 0.0
+#     slow_loss = torch.tensor(0.0, device=x.device)
+
+#     x_detached = x.detach()
 
 #     for blk in model.blocks:
-#         f = blk.ffn.fast(blk.ffn.fast[0].weight.new_tensor(x))
+#         h = blk.norm2(blk.ffn.fast[0](x_detached))  # shared input proxy
 
-#         slow_outs = [s(blk.ffn.fast[0].weight.new_tensor(x)).detach()
-#                      for s in blk.ffn.slow]
+#         fast_out = blk.ffn.fast(h).detach()
 
-#         mix = torch.stack([f] + slow_outs, dim=0)
+#         slow_outs = [s(h) for s in blk.ffn.slow]
 
-#         g = torch.softmax(blk.ffn.gate(
-#             blk.ffn.fast[0].weight.new_tensor(x)
-#         ), dim=-1).unsqueeze(-1)
+#         mix = torch.stack([fast_out] + slow_outs, dim=2)
 
-#         slow_loss += F.mse_loss(
-#             (g * mix.permute(1, 2, 0, 3)).sum(dim=2),
-#             f
-#         )
+#         g = torch.softmax(blk.ffn.gate(h), dim=-1).unsqueeze(-1)
+
+#         pred = (g * mix).sum(dim=2)
+
+#         slow_loss = slow_loss + F.mse_loss(pred, fast_out)
 
 #     # ---------------------
-#     # slow updates (multi-timescale)
+#     # SLOW OPTIMIZATION (multi-timescale)
 #     # ---------------------
-#     for f, opt in slow_optimizers.items():
-#         if global_step % f == 0:
+#     for freq, opt in slow_optimizers.items():
+#         if global_step % freq == 0:
 #             opt.zero_grad()
 #             slow_loss.backward()
 #             opt.step()

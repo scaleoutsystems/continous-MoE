@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
+# Multiple CMS per layer. Each expert is a CMS FFN instead of just one CMS with multiple slow.
 # =========================================================
 # CMS + MoE ViT (Google-style hybrid)
 # - ViT backbone
@@ -22,7 +22,7 @@ import torch.nn.functional as F
 # │        ├─ Expert 2 (CMS: fast + slow)                  │
 # │        └─ Expert N (CMS: fast + slow)                  │
 # │                                                        │
-# │  Depth-wise timescale: 2^l                             │
+# │  Width-wise timescale: 2^l                             │
 # │  Expert-level memory: fast/slow hierarchy              │
 # │  Token-level routing: sparse MoE                       │
 # │  Regularization: capacity loss                         │
@@ -36,15 +36,15 @@ import torch.nn.functional as F
 # [CLS] + Tokens
 #     │
 # ────────────────────────────────────────────
-# Transformer Block 1  (fastest adaptation)
+# Transformer Block 1  
 #   ├─ Self-Attention
 #   └─ MoE-CMS FFN
 # ────────────────────────────────────────────
-# Transformer Block 2  (slower)
+# Transformer Block 2  
 #   ├─ Self-Attention
 #   └─ MoE-CMS FFN
 # ────────────────────────────────────────────
-# Transformer Block 3  (slower still)
+# Transformer Block 3  
 #   ├─ Self-Attention
 #   └─ MoE-CMS FFN
 # ────────────────────────────────────────────
