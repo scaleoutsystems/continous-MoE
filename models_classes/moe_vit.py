@@ -494,7 +494,12 @@ def create_moe_vit(num_classes=10,
                    moe_route_with_cls_token: bool = True,
                    pretrained: bool = False,
                    router_balancing: bool = False, router_balance_strength: float = 0.1,
-                   router_lr_multiplier: float = 1.0):
+                   router_lr_multiplier: float = 1.0,
+                   # optional expert LR multipliers accepted from config but ignored by factory
+                   moe_unshared_lr_multipliers=None,
+                   moe_shared_lr_multiplier=None,
+                   moe_shared_lr_multipliers=None,
+                   **kwargs):
     """Factory that builds a ViT with configurable MoE layers.
 
     Args:
@@ -533,6 +538,9 @@ def create_moe_vit(num_classes=10,
         'router_balancing': router_balancing,
         'router_balance_strength': router_balance_strength,
         'router_lr_multiplier': router_lr_multiplier,
+        'moe_unshared_lr_multipliers': moe_unshared_lr_multipliers,
+        'moe_shared_lr_multiplier': moe_shared_lr_multiplier,
+        'moe_shared_lr_multipliers': moe_shared_lr_multipliers,
     }
 
     return {
