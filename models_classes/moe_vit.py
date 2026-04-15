@@ -252,6 +252,24 @@ class MoE(nn.Module):
         """
         B, N, C = x.shape
 
+        U = self.num_unshared_experts
+        T = self.num_shared_experts
+        total = self.num_experts
+        k = min(self.top_k, U)
+
+        # If there are no unshared experts selected (k == 0) handle two cases:
+        # - no shared experts: identity
+        # - shared experts only: run shared experts unweighted and return
+        if k == 0:
+            if T == 0:
+                return x
+            out = torch.zeros_like(x)
+            for e in range(U, total):
+                out = out + self.experts[e](x)
+            # no gating happened, clear last gate probs
+            self._last_gate_probs = None
+            return out
+
         # Routing per-token: apply gate to each token representation
         # logits shape: (B, N, U)
         logits = self.gate(x)
@@ -265,13 +283,6 @@ class MoE(nn.Module):
         self.cumulative_gate_sum = (self.cumulative_gate_sum.cpu() + gate_probs.detach().sum(dim=(0, 1)).cpu())
         # cumulative_samples tracks tokens processed
         self.cumulative_samples += (B * N)
-
-        U = self.num_unshared_experts
-        T = self.num_shared_experts
-        total = self.num_experts
-        k = min(self.top_k, U)
-        if k == 0 and T == 0:
-            return x
 
         # select top-k unshared experts PER TOKEN
         # selected_mask shape: (B, N, U)
