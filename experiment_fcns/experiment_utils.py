@@ -1,5 +1,6 @@
 import torch
 
+
 # auxiliary loss (router balancing, etc.)
 def compute_aux_loss(model, cfg):
     loss_aux = 0.0
@@ -17,23 +18,117 @@ def compute_aux_loss(model, cfg):
             loss_aux = strength * loss_aux
     return loss_aux
 
+
 def _make_optimizer_for_model(m, cfg):
-        opt_cfg = cfg.get("optimizer", {"name": "adam"})
-        lr = cfg.get("loss", {}).get("lr", opt_cfg.get("lr", 1e-3))
-        if opt_cfg["name"].lower() == "adam":
-            return torch.optim.Adam(m.parameters(), lr=lr)
-        elif opt_cfg["name"].lower() == "sgd":
-            return torch.optim.SGD(m.parameters(), lr=lr, momentum=opt_cfg.get("momentum", 0.0))
-        elif opt_cfg["name"].lower() == "adamw":
-            return torch.optim.AdamW(m.parameters(), lr=lr)
-        else:
-            raise ValueError(f"Unsupported optimizer {opt_cfg["name"]}")
+    opt_cfg = cfg.get("optimizer", {"name": "adam"})
+    lr = cfg.get("loss", {}).get("lr", opt_cfg.get("lr", 1e-3))
+
+    # support MoE per-expert multipliers if provided in cfg['model']
+    model_cfg = cfg.get("model", {})
+    _um = model_cfg.get("moe_unshared_lr_multipliers", None)
+    _sm = model_cfg.get("moe_shared_lr_multipliers", None)
+    _ss = model_cfg.get("moe_shared_lr_multiplier", None)
+
+    def _normalize_mult(v):
+        if v is None:
+            return None
+        if isinstance(v, (int, float)):
+            return float(v)
+        if isinstance(v, list):
+            return [float(x) for x in v]
+        return None
+
+    unshared_multipliers = _normalize_mult(_um)
+    shared_multipliers = _normalize_mult(_sm)
+    shared_scalar = None if _ss is None else float(_ss)
+
+    # collect router params (if present) and optionally freeze if requested
+    router_mult = cfg.get("router_lr_multiplier", 1.0)
+    router_params = list(m.get_router_parameters()) if hasattr(m, "get_router_parameters") else []
+    router_ids = {id(p) for p in router_params}
+    if router_mult is None:
+        router_mult = 1.0
+    if router_mult <= 0 and hasattr(m, "freeze_routing"):
+        m.freeze_routing(True)
+        router_params = []
+        router_ids = set()
+
+    # collect expert groups
+    expert_param_groups = []
+    expert_param_ids = set()
+    for mod in m.modules():
+        if hasattr(mod, "experts") and isinstance(getattr(mod, "experts"), torch.nn.ModuleList) and hasattr(mod, "num_unshared_experts"):
+            if hasattr(mod, "get_expert_parameters"):
+                expert_infos = mod.get_expert_parameters()
+            else:
+                expert_infos = []
+                for idx, expert in enumerate(mod.experts):
+                    expert_infos.append((idx, list(expert.parameters()), idx >= mod.num_unshared_experts))
+
+            for e_idx, params, is_shared in expert_infos:
+                if not params:
+                    continue
+                mult = 1.0
+                if not is_shared:
+                    if unshared_multipliers is None:
+                        mult = 1.0
+                    elif isinstance(unshared_multipliers, float):
+                        mult = float(unshared_multipliers)
+                    elif isinstance(unshared_multipliers, list):
+                        if e_idx < len(unshared_multipliers):
+                            mult = float(unshared_multipliers[e_idx])
+                        else:
+                            mult = float(unshared_multipliers[-1])
+                else:
+                    if shared_multipliers is not None:
+                        if isinstance(shared_multipliers, list):
+                            sidx = e_idx - mod.num_unshared_experts
+                            if sidx < len(shared_multipliers):
+                                mult = float(shared_multipliers[sidx])
+                            else:
+                                mult = float(shared_multipliers[-1])
+                        else:
+                            mult = float(shared_multipliers)
+                    elif shared_scalar is not None:
+                        mult = float(shared_scalar)
+                    else:
+                        mult = 1.0
+
+                if mult == 1.0:
+                    continue
+                filtered = [p for p in params if id(p) not in router_ids and id(p) not in expert_param_ids]
+                if not filtered:
+                    continue
+                for p in filtered:
+                    expert_param_ids.add(id(p))
+                expert_param_groups.append({"params": filtered, "lr": lr * float(mult)})
+
+    all_params = list(m.parameters())
+    base_params = [p for p in all_params if id(p) not in router_ids and id(p) not in expert_param_ids]
+    param_groups = [{"params": base_params}]
+    if router_params:
+        param_groups.append({"params": router_params, "lr": lr * router_mult})
+    param_groups.extend(expert_param_groups)
+
+    name = opt_cfg["name"].lower()
+    if name == "adam":
+        return torch.optim.Adam(param_groups, lr=lr)
+    elif name == "sgd":
+        return torch.optim.SGD(param_groups, lr=lr, momentum=opt_cfg.get("momentum", 0.0))
+    elif name == "adamw":
+        return torch.optim.AdamW(param_groups, lr=lr)
+    else:
+        raise ValueError(f"Unsupported optimizer {opt_cfg['name']}")
+
 
 def _make_scheduler_for_optimizer(opt, cfg, epochs_per_domain):
     sch_cfg = cfg.get("scheduler", {})
     if not sch_cfg or sch_cfg.get("name") is None:
         return None
-    name = sch_cfg.get("name").lower()
+    name = sch_cfg.get("name")
+    if name is None:
+        return None
+    name = name.lower()
     if name == "cosine":
         T_max = sch_cfg.get("T_max", epochs_per_domain)
         if T_max is None or T_max == 0:
@@ -44,6 +139,7 @@ def _make_scheduler_for_optimizer(opt, cfg, epochs_per_domain):
     if name == "linear":
         return torch.optim.lr_scheduler.LinearLR(opt, start_factor=sch_cfg.get("start_factor", 1.0), end_factor=sch_cfg.get("end_factor", 0.1), total_iters=sch_cfg.get("total_iters", epochs_per_domain))
     return None
+
 
 def _norm_seed(val):
     if val is None:

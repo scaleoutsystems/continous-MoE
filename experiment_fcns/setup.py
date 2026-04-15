@@ -151,55 +151,115 @@ def load_config(path: str) -> Dict[str, Any]:
     opt_cfg = cfg.get("optimizer", {"name": "adam"})
     loss_cfg = cfg.get("loss", {})
     lr = loss_cfg.get("lr", 1e-3)
+
+    # MoE expert LR multipliers (optional). These may be provided in the
+    # model config as either a scalar or a list. If omitted, experts use the
+    # base learning rate.
+    model_cfg = cfg.get("model", {})
+    _um = model_cfg.get("moe_unshared_lr_multipliers", None)
+    _sm = model_cfg.get("moe_shared_lr_multipliers", None)
+    _ss = model_cfg.get("moe_shared_lr_multiplier", None)
+
+    def _normalize_mult(v):
+        if v is None:
+            return None
+        if isinstance(v, (int, float)):
+            return float(v)
+        if isinstance(v, list):
+            return [float(x) for x in v]
+        return None
+
+    unshared_multipliers = _normalize_mult(_um)
+    shared_multipliers = _normalize_mult(_sm)
+    shared_scalar = None if _ss is None else float(_ss)
+
     # optionally reduce router learning rate
     router_mult = cfg.get("router_lr_multiplier", 1.0)
-    if opt_cfg["name"].lower() == "adam":
-        # if multiplier is zero we treat it as a freeze
-        if router_mult is None:
-            router_mult = 1.0
-        if router_mult <= 0 or not hasattr(model, "get_router_parameters"):
-            if router_mult <= 0 and hasattr(model, "freeze_routing"):
-                model.freeze_routing(True)
-            optimizer = torch.optim.Adam(model.parameters(), lr=lr)
-        else:
-            router_params = list(model.get_router_parameters())
-            non_router = [p for p in model.parameters() if p not in set(router_params)]
-            param_groups = [{"params": non_router}]
-            if router_params:
-                param_groups.append({"params": router_params, "lr": lr * router_mult})
-            optimizer = torch.optim.Adam(param_groups, lr=lr)
-    elif opt_cfg["name"].lower() == "adamw":
-        # if multiplier is zero we treat it as a freeze
-        if router_mult is None:
-            router_mult = 1.0
-        if router_mult <= 0 or not hasattr(model, "get_router_parameters"):
-            if router_mult <= 0 and hasattr(model, "freeze_routing"):
-                model.freeze_routing(True)
-            optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
-        else:
-            router_params = list(model.get_router_parameters())
-            non_router = [p for p in model.parameters() if p not in set(router_params)]
-            param_groups = [{"params": non_router}]
-            if router_params:
-                param_groups.append({"params": router_params, "lr": lr * router_mult})
-            optimizer = torch.optim.AdamW(param_groups, lr=lr)
-        
-    elif opt_cfg["name"].lower() == "sgd":
-        if router_mult is None:
-            router_mult = 1.0
-        if router_mult <= 0 or not hasattr(model, "get_router_parameters"):
-            if router_mult <= 0 and hasattr(model, "freeze_routing"):
-                model.freeze_routing(True)
-            optimizer = torch.optim.SGD(model.parameters(), lr=lr,
-                                        momentum=opt_cfg.get("momentum", 0.0))
-        else:
-            router_params = list(model.get_router_parameters())
-            non_router = [p for p in model.parameters() if p not in set(router_params)]
-            param_groups = [{"params": non_router}]
-            if router_params:
-                param_groups.append({"params": router_params, "lr": lr * router_mult})
-            optimizer = torch.optim.SGD(param_groups, lr=lr,
-                                        momentum=opt_cfg.get("momentum", 0.0))
+
+    # collect router parameters (if supported)
+    router_params = list(model.get_router_parameters()) if hasattr(model, "get_router_parameters") else []
+    router_ids = {id(p) for p in router_params}
+
+    # if router_mult <= 0 treat it as freeze: disable grads and exclude them
+    if router_mult is None:
+        router_mult = 1.0
+    if router_mult <= 0 and hasattr(model, "freeze_routing"):
+        model.freeze_routing(True)
+        router_params = []
+        router_ids = set()
+
+    # collect expert-specific parameter groups (if any MoE modules present)
+    expert_param_groups = []
+    expert_param_ids = set()
+    for m in model.modules():
+        if hasattr(m, "experts") and isinstance(getattr(m, "experts"), torch.nn.ModuleList) and hasattr(m, "num_unshared_experts"):
+            if hasattr(m, "get_expert_parameters"):
+                expert_infos = m.get_expert_parameters()
+            else:
+                expert_infos = []
+                for idx, expert in enumerate(m.experts):
+                    expert_infos.append((idx, list(expert.parameters()), idx >= m.num_unshared_experts))
+
+            for e_idx, params, is_shared in expert_infos:
+                if not params:
+                    continue
+                # determine multiplier for this expert
+                mult = 1.0
+                if not is_shared:
+                    if unshared_multipliers is None:
+                        mult = 1.0
+                    elif isinstance(unshared_multipliers, float):
+                        mult = float(unshared_multipliers)
+                    elif isinstance(unshared_multipliers, list):
+                        if e_idx < len(unshared_multipliers):
+                            mult = float(unshared_multipliers[e_idx])
+                        else:
+                            mult = float(unshared_multipliers[-1])
+                else:
+                    if shared_multipliers is not None:
+                        if isinstance(shared_multipliers, list):
+                            sidx = e_idx - m.num_unshared_experts
+                            if sidx < len(shared_multipliers):
+                                mult = float(shared_multipliers[sidx])
+                            else:
+                                mult = float(shared_multipliers[-1])
+                        else:
+                            mult = float(shared_multipliers)
+                    elif shared_scalar is not None:
+                        mult = float(shared_scalar)
+                    else:
+                        mult = 1.0
+
+                # skip identity multiplier
+                if mult == 1.0:
+                    continue
+
+                # filter out params already handled (router or other experts)
+                filtered = [p for p in params if id(p) not in router_ids and id(p) not in expert_param_ids]
+                if not filtered:
+                    continue
+                for p in filtered:
+                    expert_param_ids.add(id(p))
+                expert_param_groups.append({"params": filtered, "lr": lr * float(mult)})
+
+    # base parameters: exclude router and expert params
+    all_params = list(model.parameters())
+    base_params = [p for p in all_params if id(p) not in router_ids and id(p) not in expert_param_ids]
+
+    param_groups = [{"params": base_params}]
+    if router_params:
+        param_groups.append({"params": router_params, "lr": lr * router_mult})
+    # append any expert groups discovered
+    param_groups.extend(expert_param_groups)
+
+    # construct optimizer
+    name = opt_cfg["name"].lower()
+    if name == "adam":
+        optimizer = torch.optim.Adam(param_groups, lr=lr)
+    elif name == "adamw":
+        optimizer = torch.optim.AdamW(param_groups, lr=lr)
+    elif name == "sgd":
+        optimizer = torch.optim.SGD(param_groups, lr=lr, momentum=opt_cfg.get("momentum", 0.0))
     else:
         raise ValueError(f"Unsupported optimizer {opt_cfg['name']}")
 

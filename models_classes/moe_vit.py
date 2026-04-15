@@ -162,6 +162,18 @@ class MoE(nn.Module):
     def get_router_parameters(self):
         return self.gate.parameters()
 
+    def get_expert_parameters(self):
+        """Return a list of tuples (expert_index, params_list, is_shared).
+
+        Useful for external code to build optimizer parameter groups per-expert.
+        """
+        out = []
+        for e_idx, expert in enumerate(self.experts):
+            params = list(expert.parameters())
+            is_shared = e_idx >= self.num_unshared_experts
+            out.append((e_idx, params, is_shared))
+        return out
+
     # helper for optimizer adjustments --------------------------------------------------
     def adjust_router_learning_rate(self, optimizer: torch.optim.Optimizer, multiplier: float):
         """Modify ``optimizer`` so that router parameters use ``lr * multiplier``.
