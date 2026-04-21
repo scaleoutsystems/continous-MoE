@@ -23,229 +23,287 @@ class ViTBackbone(nn.Module):
 
 
 # ----------------------------
-# MoE Head with EMA Experts
+# MoE Head with Stable EMA
 # ----------------------------
-class EMAMoEHead(nn.Module):
+class StableEMAMoEHead(nn.Module):
     def __init__(
         self,
         feat_dim,
         num_classes,
         num_experts=8,
-        momentum=0.99,
-        eps=1e-6
+        momentum_fast=0.95,
+        momentum_slow=0.995,
+        var_floor=1e-2,
+        var_ceiling=10.0
     ):
         super().__init__()
 
         self.num_experts = num_experts
         self.num_classes = num_classes
-        self.momentum = momentum
-        self.eps = eps
 
-        # expert classifiers
+        self.m_fast = momentum_fast
+        self.m_slow = momentum_slow
+
+        self.var_floor = var_floor
+        self.var_ceiling = var_ceiling
+
+        # experts
         self.experts = nn.ModuleList([
             nn.Linear(feat_dim, num_classes)
             for _ in range(num_experts)
         ])
 
-        # learned router
+        # router
         self.router = nn.Sequential(
             nn.Linear(feat_dim, feat_dim),
             nn.ReLU(),
             nn.Linear(feat_dim, num_experts)
         )
 
-        # EMA statistics per expert
-        self.register_buffer("centroids", torch.zeros(num_experts, feat_dim))
+        # dual EMA stats
+        self.register_buffer("mu_fast", torch.zeros(num_experts, feat_dim))
+        self.register_buffer("mu_slow", torch.zeros(num_experts, feat_dim))
         self.register_buffer("var", torch.ones(num_experts, feat_dim))
         self.register_buffer("initialized", torch.zeros(num_experts))
 
+    # ----------------------------
+    # EMA update (CONFIDENCE GATED)
+    # ----------------------------
     @torch.no_grad()
-    def update_ema(self, feats, expert_idx):
+    def update_ema(self, feats, expert_idx, confidence):
         """
-        ONLY update experts that were actually used.
-
-        feats: [B, D]
-        expert_idx: [B] (top-1 routing indices)
+        Only update if routing confidence is high.
         """
 
         for i in range(self.num_experts):
-            mask = (expert_idx == i)
+            mask = (expert_idx == i) & (confidence > 0.6)
             if mask.sum() == 0:
-                continue  # IMPORTANT: only update used experts
+                continue
 
             x = feats[mask]
 
-            batch_mean = x.mean(dim=0)
-            batch_var = x.var(dim=0, unbiased=False) + self.eps
+            batch_mu = x.mean(dim=0)
+            batch_var = x.var(dim=0, unbiased=False)
+
+            batch_var = torch.clamp(batch_var, self.var_floor, self.var_ceiling)
 
             if self.initialized[i] == 0:
-                self.centroids[i] = batch_mean
+                self.mu_fast[i] = batch_mu
+                self.mu_slow[i] = batch_mu
                 self.var[i] = batch_var
                 self.initialized[i] = 1
             else:
-                m = self.momentum
-                self.centroids[i] = m * self.centroids[i] + (1 - m) * batch_mean
-                self.var[i] = m * self.var[i] + (1 - m) * batch_var
+                self.mu_fast[i] = self.m_fast * self.mu_fast[i] + (1 - self.m_fast) * batch_mu
+                self.mu_slow[i] = self.m_slow * self.mu_slow[i] + (1 - self.m_slow) * batch_mu
+                self.var[i] = self.m_slow * self.var[i] + (1 - self.m_slow) * batch_var
 
 
 # ----------------------------
-# Gaussian W2 proxy distance AKA Mahalanobis w/ log variance
+# Stable W2 proxy distance
 # ----------------------------
-def gaussian_w2(feats, centroids, var):
+def gaussian_w2(feats, mu_fast, mu_slow, var):
     """
-    feats: [B, D]
-    centroids: [E, D]
-    var: [E, D]
-
-    returns: [B, E]
+    Hybrid dual-centroid distance
     """
 
-    x = feats.unsqueeze(1)        # [B,1,D]
-    mu = centroids.unsqueeze(0)   # [1,E,D]
-    v = var.unsqueeze(0)          # [1,E,D]
+    x = feats.unsqueeze(1)  # [B,1,D]
+    mf = mu_fast.unsqueeze(0)
+    ms = mu_slow.unsqueeze(0)
+    v = var.unsqueeze(0)
 
-    diff2 = (x - mu) ** 2
-    mahal = diff2 / (v + 1e-6)
-    logvar = torch.log(v + 1e-6)
+    def dist(mu):
+        diff2 = (x - mu) ** 2
+        return (diff2 / (v + 1e-6)).sum(dim=-1)
 
-    return (mahal + logvar).sum(dim=-1)  # [B,E]
+    return 0.5 * dist(mf) + 0.5 * dist(ms)
+
+
+# ----------------------------
+# Domain Shift Detector
+# ----------------------------
+class DomainShiftDetector(nn.Module):
+    def __init__(self, feat_dim, window=128, threshold=2.5):
+        super().__init__()
+        self.window = window
+        self.threshold = threshold
+
+        self.register_buffer("buffer", torch.zeros(window, feat_dim))
+        self.register_buffer("ptr", torch.zeros(1, dtype=torch.long))
+        self.register_buffer("filled", torch.zeros(1))
+
+        self.register_buffer("ref_mean", torch.zeros(feat_dim))
+        self.register_buffer("ref_std", torch.ones(feat_dim))
+
+    @torch.no_grad()
+    def update(self, feats):
+        B = feats.size(0)
+
+        for i in range(B):
+            self.buffer[self.ptr] = feats[i]
+            self.ptr[0] = (self.ptr[0] + 1) % self.window
+            self.filled[0] = min(self.filled[0] + 1, self.window)
+
+    @torch.no_grad()
+    def detect(self, feats):
+        """
+        returns shift score
+        """
+
+        if self.filled[0] < self.window:
+            return torch.tensor(0.0, device=feats.device)
+
+        cur_mean = feats.mean(dim=0)
+
+        diff = (cur_mean - self.ref_mean) / (self.ref_std + 1e-6)
+        score = torch.norm(diff)
+
+        return score
+
+    @torch.no_grad()
+    def update_reference(self):
+        if self.filled[0] < self.window:
+            return
+
+        data = self.buffer
+
+        self.ref_mean = data.mean(dim=0)
+        self.ref_std = data.std(dim=0) + 1e-6
 
 
 # ----------------------------
 # Full MoE Model
 # ----------------------------
-class MoEModel(nn.Module):
+class StableMoE(nn.Module):
     def __init__(
         self,
         backbone,
         head,
+        detector,
         k=2,
         tau=1.0,
-        lambda_router=0.5
+        lambda_router=0.6,
+        epsilon=0.05
     ):
         super().__init__()
 
         self.backbone = backbone
         self.head = head
+        self.detector = detector
 
         self.k = k
         self.tau = tau
         self.lambda_router = lambda_router
+        self.epsilon = epsilon
 
     def forward(self, x):
-        """
-        Returns:
-            logits: final prediction
-            probs: routing probabilities
-            feats: backbone features
-            topk_idx: selected experts
-        """
 
-        feats = self.backbone(x)  # [B,D]
+        feats = self.backbone(x)
 
-        # learned router logits
-        router_logits = self.head.router(feats)  # [B,E]
+        # update shift buffer
+        self.detector.update(feats)
 
-        # W2 proxy distances
+        # shift score
+        shift_score = self.detector.detect(feats)
+
+        # adapt routing under shift
+        shift_active = shift_score > self.detector.threshold
+
+        router_logits = self.head.router(feats)
+
         w2 = gaussian_w2(
             feats,
-            self.head.centroids,
+            self.head.mu_fast,
+            self.head.mu_slow,
             self.head.var
         )
 
         metric_logits = -w2 / self.tau
 
-        # annealed mixture of learned + metric routing
-        logits = (
-            (1 - self.lambda_router) * router_logits +
-            self.lambda_router * metric_logits
-        )
+        logits = (1 - self.lambda_router) * router_logits + self.lambda_router * metric_logits
 
         probs = F.softmax(logits, dim=-1)
 
-        # top-k routing
+        # epsilon exploration (prevents collapse under shift)
+        if shift_active:
+            probs = (1 - self.epsilon) * probs + self.epsilon / self.head.num_experts
+
         topk_vals, topk_idx = torch.topk(probs, self.k, dim=-1)
 
         topk_probs = topk_vals / (topk_vals.sum(dim=-1, keepdim=True) + 1e-8)
 
-        # expert outputs
-        B = feats.shape[0]
-        outputs = []
+        B = feats.size(0)
+        logits_out = torch.zeros(B, self.head.num_classes, device=feats.device)
 
         for j in range(self.k):
             idx = topk_idx[:, j]
-            weight = topk_probs[:, j].unsqueeze(-1)
+            w = topk_probs[:, j].unsqueeze(-1)
 
-            out = []
-            for i in range(B):
-                expert_id = idx[i].item()
-                out_i = self.head.experts[expert_id](feats[i].unsqueeze(0))
-                out.append(out_i)
+            out = torch.stack([
+                self.head.experts[idx[i]](feats[i].unsqueeze(0))
+                for i in range(B)
+            ], dim=0).squeeze(1)
 
-            out = torch.cat(out, dim=0)  # [B, C]
-            outputs.append(weight * out)
+            logits_out += w * out
 
-        logits_out = torch.stack(outputs, dim=0).sum(dim=0)
-
-        return logits_out, probs, feats, topk_idx
+        return logits_out, probs, feats, topk_idx, shift_score
 
 
 # ----------------------------
 # Training Step
 # ----------------------------
 def training_step(model, batch, optimizer, criterion, lambda_balance=0.01):
-    """
-    batch: (x, y)
-    """
 
     x, y = batch
 
-    logits, probs, feats, topk_idx = model(x)
+    logits, probs, feats, topk_idx, shift_score = model(x)
 
-    # task loss
-    task_loss = criterion(logits, y)
+    loss_task = criterion(logits, y)
 
-    # load balancing (prevents expert collapse)
+    # balance loss
     avg_probs = probs.mean(dim=0)
     balance_loss = (avg_probs * torch.log(avg_probs + 1e-8)).sum()
 
-    loss = task_loss + lambda_balance * balance_loss
+    loss = loss_task + lambda_balance * balance_loss
 
     optimizer.zero_grad()
     loss.backward()
     optimizer.step()
 
-    # ----------------------------
-    # EMA UPDATE (ONLY USED EXPERTS)
-    # ----------------------------
+    # EMA update (ONLY used experts + confidence gating)
     with torch.no_grad():
-        # use top-1 expert for EMA updates (important for stability)
-        model.head.update_ema(feats, topk_idx[:, 0])
+        confidence = probs.max(dim=-1).values
+        model.head.update_ema(feats, topk_idx[:, 0], confidence)
+
+        # update domain reference if stable
+        if shift_score < model.detector.threshold:
+            model.detector.update_reference()
 
     return {
         "loss": loss.item(),
-        "task_loss": task_loss.item(),
-        "balance_loss": balance_loss.item()
+        "task_loss": loss_task.item(),
+        "balance_loss": balance_loss.item(),
+        "shift_score": shift_score.item()
     }
 
 
 # ----------------------------
-# Example construction
+# Builder
 # ----------------------------
 def build_model(num_classes=10, num_experts=8):
     backbone = ViTBackbone(trainable=False)
-    head = EMAMoEHead(
+
+    head = StableEMAMoEHead(
         feat_dim=backbone.out_dim,
         num_classes=num_classes,
         num_experts=num_experts
     )
 
-    model = MoEModel(
+    detector = DomainShiftDetector(feat_dim=backbone.out_dim)
+
+    model = StableMoE(
         backbone=backbone,
         head=head,
-        k=2,
-        tau=1.0,
-        lambda_router=0.5
+        detector=detector
     )
 
     return model
