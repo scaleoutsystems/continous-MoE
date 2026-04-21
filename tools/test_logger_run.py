@@ -15,10 +15,10 @@ if __name__ == '__main__':
     logger.seeds = setup.get('resolved_seeds', None)
 
     print('Running one evaluation...')
-    domain_acc, overall_acc, preds, targets = logger.evaluate(model, test_loaders, device)
+    domain_acc, overall_acc, preds, targets, expert_usage = logger.evaluate(model, test_loaders, device)
     print('Eval done. Overall acc:', overall_acc)
 
-    metrics = logger.compute_metrics(0, 0, domain_acc, preds=preds, targets=targets)
+    metrics = logger.compute_metrics(0, 0, domain_acc, preds=preds, targets=targets, expert_usage=expert_usage)
     metrics['overall_acc'] = float(overall_acc)
     logger.log(metrics)
 

@@ -7,6 +7,10 @@ try:
     from models_classes.moe_vit import create_moe_vit
 except ImportError:
     create_moe_vit = None
+try:
+    from models_classes.pretrained_vit_proto_moe import create_pretrained_vit_moe_head
+except ImportError:
+    create_pretrained_vit_moe_head = None
 
 
 def create_model(config: Dict):
@@ -84,6 +88,13 @@ def create_model(config: Dict):
         # remove the name field, not used by factory
         p.pop("name", None)
         return create_moe_vit(**p)["model"]
+
+    elif name in ("pretrained_vit_moe_head", "pretrained_vit_proto_moe", "vit_moe_proto"):
+        if create_pretrained_vit_moe_head is None:
+            raise ImportError("Pretrained ViT MoE head factory not found; ensure models_classes is on PYTHONPATH")
+        p = mcfg.copy()
+        p.pop("name", None)
+        return create_pretrained_vit_moe_head(**p)
 
     else:
         raise ValueError(f"Unsupported model name {name}")

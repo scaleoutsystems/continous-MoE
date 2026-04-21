@@ -27,6 +27,8 @@ class DIL_Logger:
         self.baseline_confusions = []
         # epoch-by-epoch confusion matrices (full test set evaluated each epoch)
         self.epoch_confusion_matrices = []
+        # per-epoch expert usage history (list of lists)
+        self.expert_usage_history = []
         # keep all intermediate R matrices (after each compute_metrics call)
         self.R_history = []
 
@@ -68,14 +70,23 @@ class DIL_Logger:
 
         overall_acc = total_correct / total_samples
 
+        # collect expert usage from model if available (per-epoch counts)
+        expert_usage = None
+        if hasattr(model, "get_and_reset_usage_counts"):
+            try:
+                expert_usage = model.get_and_reset_usage_counts()
+            except Exception:
+                expert_usage = None
+
         return (
             np.array(domain_acc),
             overall_acc,
             torch.cat(all_preds),
             torch.cat(all_targets),
+            expert_usage,
         )
 
-    def compute_metrics(self, domain_id, epoch, domain_acc, preds=None, targets=None):
+    def compute_metrics(self, domain_id, epoch, domain_acc, preds=None, targets=None, expert_usage=None):
         i = domain_id
 
         # Average Accuracy (AA): mean of current row
@@ -146,6 +157,13 @@ class DIL_Logger:
                 # if something goes wrong, append None to preserve epoch alignment
                 self.epoch_confusion_matrices.append(None)
 
+        # record expert usage if provided
+        if expert_usage is not None:
+            try:
+                self.expert_usage_history.append(list(expert_usage))
+            except Exception:
+                self.expert_usage_history.append(None)
+
         return {
             "epoch": epoch,
             "domain": i,
@@ -158,6 +176,7 @@ class DIL_Logger:
             "fwt": None if fwt is None else float(fwt),
             "intransience": None if intrans is None else float(intrans),
             "domain_acc_vector": domain_acc.tolist(),
+            "expert_usage": None if expert_usage is None else expert_usage,
         }
 
     def finalize_domain(self, domain_acc, preds, targets):
@@ -238,6 +257,7 @@ class DIL_Logger:
             "pretrain_confusion": (self.pretrain_confusion.cpu() if torch.is_tensor(self.pretrain_confusion) else self.pretrain_confusion),
             "baseline_confusion_matrices": [c.cpu() if torch.is_tensor(c) else c
                                            for c in self.baseline_confusions],
+            "expert_usage_history": self.expert_usage_history,
             # seed information if available (populated by the experiment driver)
             "seeds": getattr(self, "seeds", None),
         }

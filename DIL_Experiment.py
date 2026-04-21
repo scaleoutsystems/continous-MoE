@@ -369,8 +369,8 @@ def main():
 
                 optimizer, router_frozen = _maybe_update_router(cfg, model, optimizer, scheduler, global_epoch, router_frozen)
 
-                domain_acc, overall_acc, preds, targets = logger.evaluate(model, test_loaders, device)
-                metrics = logger.compute_metrics(domain_id, epoch, domain_acc, preds=preds, targets=targets)
+                domain_acc, overall_acc, preds, targets, expert_usage = logger.evaluate(model, test_loaders, device)
+                metrics = logger.compute_metrics(domain_id, epoch, domain_acc, preds=preds, targets=targets, expert_usage=expert_usage)
                 metrics["overall_acc"] = float(overall_acc)
                 logger.log(metrics)
 

@@ -16,6 +16,16 @@ def compute_aux_loss(model, cfg):
                     target = torch.full_like(p_mean, 1.0 / float(max(1, p_mean.numel())))
                     loss_aux = loss_aux + ((p_mean - target) ** 2).mean()
             loss_aux = strength * loss_aux
+    # allow models to compute richer router-related auxiliary losses (attraction,
+    # repulsion, consistency) via a helper method. The model is expected to
+    # cache information from the most recent forward pass.
+    if hasattr(model, "router_aux_loss"):
+        try:
+            aux_loss_model = model.router_aux_loss(cfg.get("model", {}))
+        except Exception:
+            aux_loss_model = model.router_aux_loss()
+        if isinstance(aux_loss_model, torch.Tensor):
+            loss_aux = loss_aux + aux_loss_model
     return loss_aux
 
 

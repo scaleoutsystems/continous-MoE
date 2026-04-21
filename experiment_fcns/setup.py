@@ -53,6 +53,13 @@ def load_config(path: str) -> Dict[str, Any]:
     print(f" model           : {cfg.get('model',{}).get('name')}")
     if 'patch_size' in cfg.get('model', {}):
         print(f" patch_size       : {cfg['model']['patch_size']}")
+    # print additional model-specific MoE options if present
+    mcfg_preview = cfg.get('model', {})
+    mname = mcfg_preview.get('name', '').lower() if isinstance(mcfg_preview.get('name', ''), str) else ''
+    if mname in ("pretrained_vit_moe_head", "pretrained_vit_proto_moe", "vit_moe_proto"):
+        print(f" MoE experts     : {mcfg_preview.get('num_experts', 4)}")
+        print(f" Prototype EMA    : {mcfg_preview.get('prototype_ema', 0.99)} | router_temp: {mcfg_preview.get('router_temperature', 0.1)}")
+        print(f" Loss flags       : attraction={mcfg_preview.get('use_attraction', True)}, repulsion={mcfg_preview.get('use_repulsion', True)}, consistency={mcfg_preview.get('use_consistency', True)}, global_class={mcfg_preview.get('use_global_classification', False)}")
     print(f" epochs_per_domain  : {epochs_per_domain}")
     # full config dump for reference
     print(json.dumps(cfg, indent=2))
