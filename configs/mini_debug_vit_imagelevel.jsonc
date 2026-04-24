@@ -1,0 +1,47 @@
+{
+  // Very small test config for quick runs (mini CIFAR)
+  "seeds": {
+    "global": 0
+  },
+  "dataset": "cifar10",
+  "dataset_root": "./datasets",
+  "mini_dataset": 200,
+  "resize": 32,
+  "num_partitions": 2,
+  "partition": {
+    "type": "dirichlet",
+    "alpha": 0.5,
+    "min_size": 10,
+    "balanced": true
+  },
+  "train_frac": 0.8,
+  "batch_size": 32,
+  "shuffle": true,
+  "model": {
+    "name": "vit_moe_imagelevel",
+    "num_classes": 10,
+    "pretrained": false,
+    "patch_size": 8,
+    "moe_layer_indices": "every_other",
+    "num_experts": 3,
+    "alpha_fast": 0.8,
+    "alpha_slow": 0.99,
+    "repulsion_k": 2,
+    "repulsion_margin": 0.2,
+    "moe_lambda_fast": 0.05,
+    "moe_lambda_slow": 0.05,
+    "moe_lambda_align": 0.5,
+    "moe_lambda_cons": 0.1,
+    "moe_lambda_lb_init": 1.0,
+    "moe_anneal_epochs": 100,
+    "detach_align_steps": 5
+  },
+  "loss": {
+    "name": "cross_entropy",
+    "lr": 0.001
+  },
+  "optimizer": { "name": "adam" },
+  "epochs_per_domain": 1,
+  "pretrain": { "enabled": false },
+  "num_workers": 0
+}

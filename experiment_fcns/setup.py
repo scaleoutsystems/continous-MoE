@@ -199,13 +199,17 @@ def load_config(path: str) -> Dict[str, Any]:
     expert_param_groups = []
     expert_param_ids = set()
     for m in model.modules():
-        if hasattr(m, "experts") and isinstance(getattr(m, "experts"), torch.nn.ModuleList) and hasattr(m, "num_unshared_experts"):
+        if hasattr(m, "experts") and isinstance(getattr(m, "experts"), torch.nn.ModuleList):
+            # Support modules that expose explicit unshared/shared counts
             if hasattr(m, "get_expert_parameters"):
                 expert_infos = m.get_expert_parameters()
             else:
                 expert_infos = []
+                # assume all experts are unshared if no attribute provided
+                num_unshared = getattr(m, "num_unshared_experts", len(m.experts))
                 for idx, expert in enumerate(m.experts):
-                    expert_infos.append((idx, list(expert.parameters()), idx >= m.num_unshared_experts))
+                    is_shared = idx >= num_unshared
+                    expert_infos.append((idx, list(expert.parameters()), is_shared))
 
             for e_idx, params, is_shared in expert_infos:
                 if not params:

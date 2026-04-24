@@ -67,13 +67,14 @@ def _make_optimizer_for_model(m, cfg):
     expert_param_groups = []
     expert_param_ids = set()
     for mod in m.modules():
-        if hasattr(mod, "experts") and isinstance(getattr(mod, "experts"), torch.nn.ModuleList) and hasattr(mod, "num_unshared_experts"):
+        if hasattr(mod, "experts") and isinstance(getattr(mod, "experts"), torch.nn.ModuleList):
             if hasattr(mod, "get_expert_parameters"):
                 expert_infos = mod.get_expert_parameters()
             else:
                 expert_infos = []
+                num_unshared = getattr(mod, "num_unshared_experts", len(mod.experts))
                 for idx, expert in enumerate(mod.experts):
-                    expert_infos.append((idx, list(expert.parameters()), idx >= mod.num_unshared_experts))
+                    expert_infos.append((idx, list(expert.parameters()), idx >= num_unshared))
 
             for e_idx, params, is_shared in expert_infos:
                 if not params:

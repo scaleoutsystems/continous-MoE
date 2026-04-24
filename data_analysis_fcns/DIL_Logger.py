@@ -48,6 +48,7 @@ class DIL_Logger:
 
         all_preds = []
         all_targets = []
+        expert_usage = None
 
         for loader in loaders:
             correct, total = 0, 0
@@ -68,15 +69,27 @@ class DIL_Logger:
 
             domain_acc.append(correct / total)
 
+            # collect per-domain expert usage immediately after evaluating this loader
+            if hasattr(model, "get_and_reset_usage_counts"):
+                try:
+                    if expert_usage is None:
+                        expert_usage = []
+                    # get usage counts for this domain (resets epoch counters in model)
+                    domain_usage = model.get_and_reset_usage_counts()
+                    expert_usage.append(domain_usage)
+                except Exception:
+                    pass
+
         overall_acc = total_correct / total_samples
 
-        # collect expert usage from model if available (per-epoch counts)
-        expert_usage = None
-        if hasattr(model, "get_and_reset_usage_counts"):
-            try:
-                expert_usage = model.get_and_reset_usage_counts()
-            except Exception:
-                expert_usage = None
+        # (expert_usage already collected per-domain during loader loop)
+
+        # collect cumulative usage if model exposes it
+        try:
+            if hasattr(model, "get_cumulative_usage"):
+                self.expert_cumulative_usage = model.get_cumulative_usage()
+        except Exception:
+            pass
 
         return (
             np.array(domain_acc),
@@ -258,6 +271,8 @@ class DIL_Logger:
             "baseline_confusion_matrices": [c.cpu() if torch.is_tensor(c) else c
                                            for c in self.baseline_confusions],
             "expert_usage_history": self.expert_usage_history,
+            # cumulative per-experiment usage if model provided it via logger hooks
+            "expert_cumulative_usage": getattr(self, "expert_cumulative_usage", None),
             # seed information if available (populated by the experiment driver)
             "seeds": getattr(self, "seeds", None),
         }

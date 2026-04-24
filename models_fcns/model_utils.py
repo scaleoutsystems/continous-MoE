@@ -11,6 +11,10 @@ try:
     from models_classes.pretrained_vit_proto_moe import create_pretrained_vit_moe_head
 except ImportError:
     create_pretrained_vit_moe_head = None
+try:
+    from models_classes.vit_moe_imagelevel import create_vit_moe_imagelevel
+except ImportError:
+    create_vit_moe_imagelevel = None
 
 
 def create_model(config: Dict):
@@ -88,6 +92,13 @@ def create_model(config: Dict):
         # remove the name field, not used by factory
         p.pop("name", None)
         return create_moe_vit(**p)["model"]
+
+    elif name in ("vit_moe_imagelevel", "vit_moe_img"):
+        if create_vit_moe_imagelevel is None:
+            raise ImportError("Image-level MoE ViT factory not found; ensure models_classes is on PYTHONPATH")
+        p = mcfg.copy()
+        p.pop("name", None)
+        return create_vit_moe_imagelevel(**p)["model"]
 
     elif name in ("pretrained_vit_moe_head", "pretrained_vit_proto_moe", "vit_moe_proto"):
         if create_pretrained_vit_moe_head is None:

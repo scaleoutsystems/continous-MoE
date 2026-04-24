@@ -1,0 +1,35 @@
+{
+  // Example config to instantiate the Image-level Top-1 MoE ViT
+  "model": {
+    "name": "vit_moe_imagelevel",
+    "num_classes": 10,
+    "embed_dim": 256,
+    "depth": 10,
+    "num_heads": 4,
+    "mlp_ratio": 1.0,
+    "patch_size": 16,
+    "moe_layer_indices": [6,7,8,9],
+
+    // MoE-specific options
+    "num_experts": 4,
+    "alpha_fast": 0.8,
+    "alpha_slow": 0.99,
+    "repulsion_k": 2,
+    "repulsion_margin": 0.2,
+    "moe_lambda_fast": 0.05,
+    "moe_lambda_slow": 0.05,
+    "moe_lambda_align": 0.5,
+    "moe_lambda_cons": 0.1,
+    "moe_lambda_lb_init": 1.0,
+    "moe_anneal_epochs": 100,
+    "detach_align_steps": 100
+  },
+  "loss": {
+    "name": "cross_entropy",
+    "lr": 1e-3
+  },
+  "optimizer": {
+    "name": "adam"
+  },
+  "epochs_per_domain": 1
+}
