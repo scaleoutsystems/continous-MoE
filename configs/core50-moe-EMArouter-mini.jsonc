@@ -73,13 +73,14 @@
   // Model configuration
   "model": {
     "name": "vit_moe_imagelevel",
-    "num_classes": 10,
+    "num_classes": 50,
     "embed_dim": 256,
     "depth": 10,
     "num_heads": 4,
     "mlp_ratio": 1.0,
     "patch_size": 16,
     "moe_layer_indices": [6,7,8,9],
+    "route_with_CLS_token": false,
 
     // MoE-EMA-specific options
     "num_experts": 4,

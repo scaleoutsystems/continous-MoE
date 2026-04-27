@@ -155,8 +155,8 @@ class ImageMoE(nn.Module):
         # x: (B, T, D)
         if self.route_with_cls_token:
             return x[:, 0, :]
-        else:
-            return x.mean(dim=1)
+        else: # route via feature mean w/o CLS token
+            return x[:, 1:, :].mean(dim=1)
 
     def _maybe_initialize_centroids(self, z: torch.Tensor):
         if int(self.centroids_initialized.item()) == 1:
@@ -199,7 +199,7 @@ class ImageMoE(nn.Module):
             else:
                 assigned = p.argmax(dim=1)
 
-        self._last_z = z.detach()
+        self._last_z = z
         self._last_assigned = assigned.detach()
 
         # update epoch usage counters (image counts) for logging only
@@ -228,14 +228,13 @@ class ImageMoE(nn.Module):
                 splits = torch.tensor([0, assigned_sorted.size(0)], device=assigned.device, dtype=torch.long)
 
             # process each contiguous chunk with the corresponding expert
-            with torch.no_grad():
-                for i in range(splits.size(0) - 1):
-                    s = int(splits[i].item())
-                    e = int(splits[i + 1].item())
-                    expert_id = int(assigned_sorted[s].item())
-                    x_sel = x_sorted[s:e]
-                    y_sel = self.experts[expert_id](x_sel)
-                    out[idx_sorted[s:e]] = y_sel
+            for i in range(splits.size(0) - 1):
+                s = int(splits[i].item())
+                e = int(splits[i + 1].item())
+                expert_id = int(assigned_sorted[s].item())
+                x_sel = x_sorted[s:e]
+                y_sel = self.experts[expert_id](x_sel)
+                out[idx_sorted[s:e]] = y_sel
 
             # update centroids using normalized image representations (avoid magnitude bias)
             with torch.no_grad():
