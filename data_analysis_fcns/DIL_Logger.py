@@ -271,6 +271,8 @@ class DIL_Logger:
             "baseline_confusion_matrices": [c.cpu() if torch.is_tensor(c) else c
                                            for c in self.baseline_confusions],
             "expert_usage_history": self.expert_usage_history,
+            # record where each domain ended (epoch indices)
+            "domain_boundaries": self.domain_boundaries,
             # cumulative per-experiment usage if model provided it via logger hooks
             "expert_cumulative_usage": getattr(self, "expert_cumulative_usage", None),
             # seed information if available (populated by the experiment driver)
