@@ -370,8 +370,25 @@ def main():
                 optimizer, router_frozen = _maybe_update_router(cfg, model, optimizer, scheduler, global_epoch, router_frozen)
 
                 domain_acc, overall_acc, preds, targets, expert_usage = logger.evaluate(model, test_loaders, device)
+                # collect routing temperatures from model submodules (if any)
+                routing_temps = []
+                routing_temps_init = []
+                try:
+                    for m in model.modules():
+                        if hasattr(m, "routing_temp") or hasattr(m, "routing_temp_init"):
+                            rt = getattr(m, "routing_temp", None)
+                            rti = getattr(m, "routing_temp_init", None)
+                            routing_temps.append(None if rt is None else float(rt))
+                            routing_temps_init.append(None if rti is None else float(rti))
+                except Exception:
+                    routing_temps = []
+                    routing_temps_init = []
+
                 metrics = logger.compute_metrics(domain_id, epoch, domain_acc, preds=preds, targets=targets, expert_usage=expert_usage)
                 metrics["overall_acc"] = float(overall_acc)
+                # attach routing temperature info so it is persisted in the logger
+                metrics["routing_temps"] = routing_temps
+                metrics["routing_temps_init"] = routing_temps_init
                 logger.log(metrics)
 
                 print(
