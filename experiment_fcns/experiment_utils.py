@@ -63,7 +63,17 @@ def _make_optimizer_for_model(m, cfg):
         router_params = []
         router_ids = set()
 
-    # collect expert groups
+    # collect all expert parameter ids (so we can always create a dedicated
+    # expert param-group even if no multipliers are specified)
+    all_expert_param_ids = set()
+    for mod in m.modules():
+        if hasattr(mod, "experts") and isinstance(getattr(mod, "experts"), torch.nn.ModuleList):
+            for expert in mod.experts:
+                for p in expert.parameters():
+                    if id(p) not in router_ids:
+                        all_expert_param_ids.add(id(p))
+
+    # collect expert groups (per-expert multipliers) as before; track ids used
     expert_param_groups = []
     expert_param_ids = set()
     for mod in m.modules():
@@ -115,11 +125,26 @@ def _make_optimizer_for_model(m, cfg):
                 expert_param_groups.append({"params": filtered, "lr": lr * float(mult)})
 
     all_params = list(m.parameters())
-    base_params = [p for p in all_params if id(p) not in router_ids and id(p) not in expert_param_ids]
+    # base parameters = all params excluding routers and all expert params
+    base_params = [p for p in all_params if id(p) not in router_ids and id(p) not in all_expert_param_ids]
     param_groups = [{"params": base_params}]
     if router_params:
         param_groups.append({"params": router_params, "lr": lr * router_mult})
+    # add any per-expert groups (from multipliers)
     param_groups.extend(expert_param_groups)
+
+    # remaining expert params not covered by specialized per-expert groups
+    remaining_expert_params = [p for p in all_params if id(p) in all_expert_param_ids and id(p) not in expert_param_ids and id(p) not in router_ids]
+    if remaining_expert_params:
+        # allow absolute LR or multiplier in model cfg
+        model_cfg = cfg.get("model", {})
+        moe_expert_lr = model_cfg.get("moe_expert_lr", None)
+        moe_expert_lr_mult = float(model_cfg.get("moe_expert_lr_multiplier", 1.0))
+        if moe_expert_lr is not None:
+            group_lr = float(moe_expert_lr)
+        else:
+            group_lr = lr * moe_expert_lr_mult
+        param_groups.append({"params": remaining_expert_params, "lr": group_lr})
 
     name = opt_cfg["name"].lower()
     if name == "adam":
@@ -182,6 +207,15 @@ def _maybe_update_router(cfg, model, optimizer, scheduler, epoch, router_frozen)
             if scheduler is not None:
                 scheduler.optimizer = optimizer
                 scheduler.base_lrs = [group["lr"] for group in optimizer.param_groups]
+    # allow modules (e.g., ImageMoE layers) to update their annealed routing
+    # temperature each epoch if they expose the helper.
+    for mod in model.modules():
+        if hasattr(mod, "update_routing_temperature"):
+            try:
+                mod.update_routing_temperature(epoch)
+            except Exception:
+                pass
+
     return optimizer, router_frozen
 
 

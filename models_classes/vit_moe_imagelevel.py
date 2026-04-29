@@ -94,6 +94,7 @@ class ImageMoE(nn.Module):
         routing_temp: Optional[float] = None,
         routing_sample: bool = False,
         detach_align_steps: int = 100,
+        routing_anneal_epochs: int = 0,
     ):
         super().__init__()
         self.dim = dim
@@ -132,8 +133,13 @@ class ImageMoE(nn.Module):
         self.register_buffer('_global_step', torch.tensor(0.0))
 
         # routing temperature and sampling (default: deterministic argmax)
-        self.routing_temp = None if routing_temp is None else float(routing_temp)
+        # routing_temp stores the current (possibly annealed) temperature.
+        # routing_temp_init records the initial temperature for annealing.
+        self.routing_temp_init = None if routing_temp is None else float(routing_temp)
+        self.routing_temp = self.routing_temp_init
         self.routing_sample = bool(routing_sample)
+        # number of epochs over which to linearly anneal routing_temp_init -> 0
+        self.routing_anneal_epochs = int(routing_anneal_epochs)
         # how many global steps to keep alignment z detached (support warm-up)
         self.detach_align_steps = int(detach_align_steps)
 
@@ -190,6 +196,7 @@ class ImageMoE(nn.Module):
 
         # similarities and assignments (optionally temperature-scaled / sampled)
         sims = torch.matmul(z_norm, c_slow_norm.t())  # (B, N)
+        # use current routing temperature (may be annealed externally)
         if self.routing_temp is None or float(self.routing_temp) <= 0.0:
             assigned = sims.argmax(dim=1)
         else:
@@ -199,7 +206,7 @@ class ImageMoE(nn.Module):
             else:
                 assigned = p.argmax(dim=1)
 
-        self._last_z = z
+        self._last_z = z.detach()
         self._last_assigned = assigned.detach()
 
         # update epoch usage counters (image counts) for logging only
@@ -276,6 +283,22 @@ class ImageMoE(nn.Module):
         target = torch.full_like(p, 1.0 / float(self.num_experts))
         loss = ((p - target) ** 2).mean()
         return strength * loss
+
+    def update_routing_temperature(self, epoch: int):
+        """Update the internally-stored routing temperature given the global epoch.
+
+        The temperature is annealed linearly from `routing_temp_init` down to
+        0 over `routing_anneal_epochs`. When the temperature reaches 0 the
+        routing falls back to hard argmax selection.
+        """
+        if self.routing_temp_init is None or self.routing_anneal_epochs <= 0:
+            return
+        try:
+            frac = max(0.0, 1.0 - float(epoch) / float(self.routing_anneal_epochs))
+            self.routing_temp = float(self.routing_temp_init) * frac
+        except Exception:
+            # be conservative and keep current temp on error
+            pass
 
     def router_aux_loss(self, model_cfg: Optional[Dict] = None) -> torch.Tensor:
         """Compute auxiliary centroid-based losses for this layer.
@@ -466,7 +489,7 @@ class ViTImageMoE(nn.Module):
 
     def router_balance_loss(self, strength: float = 1.0) -> torch.Tensor:
         # aggregate layer-wise balance losses
-        loss = torch.tensor(0.0)
+        loss = torch.tensor(0.0, device=next(self.parameters()).device)
         found = False
         device = None
         for m in self.modules():
@@ -526,6 +549,8 @@ def create_vit_moe_imagelevel(num_classes=10,
                               lambda_lb_init: float = 1.0,
                               anneal_epochs: int = 100,
                               detach_align_steps: int = 100,
+                              routing_temp: Optional[float] = None,
+                              routing_anneal_epochs: int = 0,
                               patch_size_default: int = 16,
                               **kwargs):
     moe_params = {
@@ -542,6 +567,8 @@ def create_vit_moe_imagelevel(num_classes=10,
         'lambda_lb_init': float(lambda_lb_init),
         'anneal_epochs': int(anneal_epochs),
         'detach_align_steps': int(detach_align_steps),
+        'routing_temp': None if routing_temp is None else float(routing_temp),
+        'routing_anneal_epochs': int(routing_anneal_epochs),
     }
 
     model = ViTImageMoE(img_size=img_size, patch_size=patch_size, num_classes=num_classes,
@@ -566,6 +593,8 @@ def create_vit_moe_imagelevel(num_classes=10,
         'lambda_lb_init': lambda_lb_init,
         'anneal_epochs': anneal_epochs,
         'detach_align_steps': detach_align_steps,
+        'routing_temp': routing_temp,
+        'routing_anneal_epochs': routing_anneal_epochs,
         'img_size': img_size,
     }
 

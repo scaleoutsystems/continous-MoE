@@ -35,6 +35,11 @@
     "moe_lambda_lb_init": 1.0,
     "moe_anneal_epochs": 100,
     "detach_align_steps": 5
+    ,
+    // routing temperature annealing (initial temperature and anneal epochs)
+    "routing_temp": 1.0,
+    "routing_anneal_epochs": 5,
+    "moe_expert_lr_multiplier": 1.0
   },
   "loss": {
     "name": "cross_entropy",

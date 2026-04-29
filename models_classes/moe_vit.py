@@ -153,6 +153,8 @@ class MoE(nn.Module):
         self.cumulative_gate_sum = torch.zeros(num_unshared_experts)
         # cumulative_selected_counts: number of tokens that selected each expert (top-k selection)
         self.cumulative_selected_counts = torch.zeros(num_unshared_experts)
+        # epoch-local selected counts (reset by logger via get_and_reset_usage_counts)
+        self.register_buffer('_epoch_selected_counts', torch.zeros(num_unshared_experts, dtype=torch.long))
         # cumulative_samples counts tokens processed (B * num_tokens)
         self.cumulative_samples = 0
 
@@ -311,6 +313,14 @@ class MoE(nn.Module):
         except Exception:
             self.cumulative_selected_counts = load.detach().cpu().clone()
 
+        # accumulate per-epoch selected counts (token-level loads) for logging
+        try:
+            with torch.no_grad():
+                addv = load.detach().cpu().to(self._epoch_selected_counts.device).long()
+                self._epoch_selected_counts += addv
+        except Exception:
+            pass
+
         # assemble output: weighted unshared + unweighted shared (vectorised over tokens)
         out = torch.zeros_like(x)
         # unshared experts
@@ -322,6 +332,15 @@ class MoE(nn.Module):
             out = out + self.experts[e](x)
 
         return out
+
+    def get_and_reset_usage_counts(self):
+        """Return per-unshared-expert selected token counts for the current epoch and reset them."""
+        try:
+            vals = self._epoch_selected_counts.detach().cpu().numpy().tolist()
+            self._epoch_selected_counts.zero_()
+            return vals
+        except Exception:
+            return [0] * (self.num_unshared_experts)
 
 
 class TransformerBlockMoE(nn.Module):
@@ -494,6 +513,39 @@ class ViTMoE(nn.Module):
                     'samples': stats.get('samples', 0),
                 })
         return results
+
+    def get_and_reset_usage_counts(self):
+        """Collect per-layer per-epoch expert counts and reset module counters.
+
+        Returns a list where each element corresponds to an MoE layer and is
+        itself a list of integers (counts per unshared expert)."""
+        out = []
+        for m in self.modules():
+            if isinstance(m, MoE):
+                try:
+                    out.append(m.get_and_reset_usage_counts())
+                except Exception:
+                    out.append(None)
+        return out
+
+    def get_cumulative_usage(self):
+        """Return cumulative selected counts per MoE layer as list of lists."""
+        out = []
+        for m in self.modules():
+            if isinstance(m, MoE):
+                try:
+                    vals = None
+                    try:
+                        vals = m.cumulative_selected_counts.tolist()
+                    except Exception:
+                        try:
+                            vals = m.cumulative_selected_counts.cpu().tolist()
+                        except Exception:
+                            vals = None
+                    out.append(vals)
+                except Exception:
+                    out.append(None)
+        return out
 
 def create_moe_vit(num_classes=10,
                    img_size: Optional[int] = None, patch_size=16,

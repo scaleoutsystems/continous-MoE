@@ -22,7 +22,14 @@
     "moe_lambda_cons": 0.1,
     "moe_lambda_lb_init": 1.0,
     "moe_anneal_epochs": 100,
-    "detach_align_steps": 100
+    "detach_align_steps": 100,
+    // Routing temperature annealing: initial temperature for soft routing. Set to 0 or omit for hard argmax.
+    "routing_temp": 1.0,
+    // Number of epochs to linearly anneal routing_temp -> 0 (hardmax). Set 0 to disable.
+    "routing_anneal_epochs": 100,
+    // Expert-group learning rate can be specified as an absolute LR or a multiplier of base LR
+    "moe_expert_lr_multiplier": 10.0 // base multiplier option
+    // "moe_expert_lr": 0.001 // absolute LR option
   },
   "loss": {
     "name": "cross_entropy",
