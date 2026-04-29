@@ -37,8 +37,8 @@
     "resize": 128, // affects both random_resize_crop and random_crop
     "random_flip": true,
     "color_jitter": true,
-    "blur": true,
-    "noise": true
+    "blur": false,
+    "noise": false
   },
 
   // --------------------------------------------------------------------

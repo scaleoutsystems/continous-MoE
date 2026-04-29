@@ -347,8 +347,8 @@ class ImageMoE(nn.Module):
                 step = float(self._global_step.item()) if hasattr(self, '_global_step') else 0.0
             except Exception:
                 step = 0.0
-            # if step < float(getattr(self, 'detach_align_steps', 0)):
-            z = z.detach() # never pull features to centroids.
+            if step < float(getattr(self, 'detach_align_steps', 0)):
+                z = z.detach()
             assigned = self._last_assigned.to(device)
             # for each sample compute cosine with its assigned slow centroid
             cs_sel = cs[assigned]

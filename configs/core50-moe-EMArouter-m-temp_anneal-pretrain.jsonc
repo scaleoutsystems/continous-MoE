@@ -79,10 +79,10 @@
     "moe_layer_indices": [6,7,8,9],
     "num_experts": 4,
     "alpha_fast": 0.8,
-    "alpha_slow": 0.99,
+    "alpha_slow": 0.995,
     "repulsion_k": 2,
     "repulsion_margin": 0.15,
-    "moe_lambda_fast": 0.02,
+    "moe_lambda_fast": 0.00,
     "moe_lambda_slow": 0.02,
     "moe_lambda_align": 0.3,
     "moe_lambda_cons": 0.05,
@@ -93,7 +93,7 @@
     // routing temperature annealing (initial temperature and anneal epochs)
     "routing_temp": 1.0, // initial temperature
     "routing_anneal_epochs": 2, // number of epochs to anneal over - if 0 then argmax
-    "moe_expert_lr_multiplier": 10.0
+    "moe_expert_lr_multiplier": 3.0
     // "routing_sample": true, // sample routing instead of argmax
     // "argmax_routing_start_epoch": 2 // start argmax instead of sampling at this epoch
   },
@@ -101,7 +101,7 @@
   // Loss and learning rate
   "loss": {
     "name": "weighted_cross_entropy", // options: "cross_entropy", "weighted_cross_entropy", "focal"
-    "lr": 0.00003,
+    "lr": 0.0001,
     // set to true to enable per-class weighting based on partition distribution
     "weighted": true,
     // upper limit applied when computing inverse-frequency weights
@@ -136,10 +136,10 @@
   // },
 
   "pretrain": {
-    "enabled": false,
-    "num_samples": 0,
+    "enabled": true,
+    "num_samples": 2000,
     "with_replacement": false,
-    "epochs": 0 // specific to just pretraining. If 0 or null or missing, uses epochs_per_domain
+    "epochs": 7 // specific to just pretraining. If 0 or null or missing, uses epochs_per_domain
   },
 
   "pretrain_scheduler": {
