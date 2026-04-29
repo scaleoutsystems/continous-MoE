@@ -65,472 +65,171 @@ class MLP(nn.Module):
 
 
 class ImageMoE(nn.Module):
-    """Image-level Top-1 MoE layer with dual-timescale centroids.
-
-    - Routing: compute image representation per-sample (CLS or mean), cosine
-      similarity to slow centroids, choose argmax (top-1). All tokens of an
-      image are forwarded to the selected expert.
-    - Centroids: `c_fast` and `c_slow` are EMA buffers (no gradients).
-    - Usage counters: epoch-local counts (`_epoch_usage_counts`) used for
-      per-epoch statistics and balancing.
-    """
-
     def __init__(
         self,
-        dim: int,
-        hidden_dim: int,
-        num_experts: int = 4,
-        route_with_cls_token: bool = True,
-        alpha_fast: float = 0.8,
-        alpha_slow: float = 0.99,
-        repulsion_k: int = 2,
-        repulsion_margin: float = 0.2,
-        lambda_fast: float = 0.05,
-        lambda_slow: float = 0.05,
-        lambda_align: float = 0.5,
-        lambda_cons: float = 0.1,
-        lambda_lb_init: float = 1.0,
-        anneal_epochs: int = 100,
-        routing_temp: Optional[float] = None,
-        routing_sample: bool = False,
-        detach_align_steps: int = 100,
-        routing_anneal_epochs: int = 0,
+        dim,
+        hidden_dim,
+        num_experts=4,
+        alpha_fast=0.8,
+        alpha_slow=0.99,
+        top_k=2,
+        routing_temp=1.0,
+        warmup_steps=200,
     ):
         super().__init__()
+
         self.dim = dim
-        self.hidden_dim = hidden_dim
-        self.num_experts = int(num_experts)
-        self.route_with_cls_token = bool(route_with_cls_token)
+        self.num_experts = num_experts
+        self.top_k = top_k
 
-        # experts (each is a standard 2-layer MLP)
-        self.experts = nn.ModuleList([MLP(dim, hidden_dim, out_dim=dim) for _ in range(self.num_experts)])
+        # experts
+        self.experts = nn.ModuleList([
+            MLP(dim, hidden_dim, out_dim=dim)
+            for _ in range(num_experts)
+        ])
 
-        # centroids stored as buffers (EMA updates)
-        c_init = F.normalize(torch.randn(self.num_experts, dim), dim=1)
-        self.register_buffer('c_fast', c_init.clone())
-        self.register_buffer('c_slow', c_init.clone())
-        self.register_buffer('centroids_initialized', torch.tensor(0, dtype=torch.uint8))
+        # learned router
+        self.router = nn.Linear(dim, num_experts, bias=False)
 
-        # EMA rates
-        self.alpha_fast = float(alpha_fast)
-        self.alpha_slow = float(alpha_slow)
+        # centroid prior
+        c_init = F.normalize(torch.randn(num_experts, dim), dim=1)
+        self.register_buffer("c_fast", c_init.clone())
+        self.register_buffer("c_slow", c_init.clone())
 
-        # loss / repulsion params
-        self.repulsion_k = int(repulsion_k)
-        self.repulsion_margin = float(repulsion_margin)
-        self.lambda_fast = float(lambda_fast)
-        self.lambda_slow = float(lambda_slow)
-        self.lambda_align = float(lambda_align)
-        self.lambda_cons = float(lambda_cons)
-        self.lambda_lb_init = float(lambda_lb_init)
-        self.anneal_epochs = int(max(1, anneal_epochs))
+        self.alpha_fast = alpha_fast
+        self.alpha_slow = alpha_slow
 
-        # epoch-local usage counters
-        self.register_buffer('_epoch_usage_counts', torch.zeros(self.num_experts, dtype=torch.long))
-        self.register_buffer('_cumulative_usage_counts', torch.zeros(self.num_experts, dtype=torch.long))
-        # small float counter to track annealing progress (incremented at epoch boundaries)
-        # use a global-step counter (incremented each training forward)
-        self.register_buffer('_global_step', torch.tensor(0.0))
+        self.routing_temp = routing_temp
+        self.warmup_steps = warmup_steps
 
-        # routing temperature and sampling (default: deterministic argmax)
-        # routing_temp stores the current (possibly annealed) temperature.
-        # routing_temp_init records the initial temperature for annealing.
-        self.routing_temp_init = None if routing_temp is None else float(routing_temp)
-        self.routing_temp = self.routing_temp_init
-        self.routing_sample = bool(routing_sample)
-        # number of epochs over which to linearly anneal routing_temp_init -> 0
-        self.routing_anneal_epochs = int(routing_anneal_epochs)
-        # how many global steps to keep alignment z detached (support warm-up)
-        self.detach_align_steps = int(detach_align_steps)
+        self.register_buffer("_global_step", torch.tensor(0.0))
 
-        # caches from last forward (detached where appropriate)
-        self._last_z = None
-        self._last_assigned = None
+        # stats
+        self.register_buffer("_epoch_usage_counts", torch.zeros(num_experts))
+        self._last_weights = None
 
-    def get_expert_parameters(self):
-        out = []
-        for idx, e in enumerate(self.experts):
-            out.append((idx, list(e.parameters()), False))
-        return out
+        # scaling
+        self.router_scale = 1.0
+        self.centroid_scale = 1.0
 
-    def get_router_parameters(self):
-        # routing is centroid-based (no trainable router)
-        return []
-
-    def _compute_image_repr(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x):
         # x: (B, T, D)
-        if self.route_with_cls_token:
-            return x[:, 0, :]
-        else: # route via feature mean w/o CLS token
-            return x[:, 1:, :].mean(dim=1)
-
-    def _maybe_initialize_centroids(self, z: torch.Tensor):
-        if int(self.centroids_initialized.item()) == 1:
-            return
-        B = z.size(0)
-        N = self.num_experts
-        if B >= N:
-            init = z[:N].detach().clone()
-        else:
-            # if batch smaller than experts, tile or sample with replacement
-            reps = []
-            for i in range(N):
-                reps.append(z[i % B].detach().clone())
-            init = torch.stack(reps, dim=0)
-        init = F.normalize(init, dim=1)
-        with torch.no_grad():
-            self.c_fast.copy_(init)
-            self.c_slow.copy_(init)
-            self.centroids_initialized.fill_(1)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """x: (B, T, D) -> returns (B, T, D)"""
         B, T, D = x.shape
-        z = self._compute_image_repr(x)  # (B, D)
-        # ensure centroids exist
-        self._maybe_initialize_centroids(z)
 
-        # normalize for cosine sim
-        z_norm = F.normalize(z, dim=1)
-        c_slow_norm = F.normalize(self.c_slow, dim=1)
+        x_flat = x.reshape(B * T, D)  # (BT, D)
 
-        # similarities and assignments (optionally temperature-scaled / sampled)
-        sims = torch.matmul(z_norm, c_slow_norm.t())  # (B, N)
-        # use current routing temperature (may be annealed externally)
-        if self.routing_temp is None or float(self.routing_temp) <= 0.0:
-            assigned = sims.argmax(dim=1)
-        else:
-            p = F.softmax(sims / float(self.routing_temp), dim=1)
-            if self.routing_sample:
-                assigned = torch.multinomial(p, num_samples=1).squeeze(1)
-            else:
-                assigned = p.argmax(dim=1)
+        # normalize
+        x_norm = F.normalize(x_flat, dim=1)
+        c_norm = F.normalize(self.c_slow, dim=1)
 
-        self._last_z = z.detach()
-        self._last_assigned = assigned.detach()
+        # centroid similarity
+        sims = torch.matmul(x_norm, c_norm.t())  # (BT, N)
 
-        # update epoch usage counters (image counts) for logging only
-        uniq, cnts = torch.unique(assigned, return_counts=True)
+        # learned router
+        router_logits = self.router(x_flat)
+
+        logits = (
+            self.router_scale * router_logits +
+            self.centroid_scale * sims
+        )
+
+        # temperature
+        temp = self.routing_temp if self.routing_temp else 1.0
+        weights = F.softmax(logits / temp, dim=1)
+
+        # warmup
+        if self._global_step < self.warmup_steps:
+            weights = torch.full_like(weights, 1.0 / self.num_experts)
+
+        # top-k sparse routing
+        topk_vals, topk_idx = torch.topk(weights, self.top_k, dim=1)
+
+        # normalize top-k weights
+        topk_vals = topk_vals / (topk_vals.sum(dim=1, keepdim=True) + 1e-9)
+
+        # output buffer
+        out_flat = torch.zeros_like(x_flat)
+
+        # dispatch tokens to experts
+        for expert_id in range(self.num_experts):
+            mask = (topk_idx == expert_id)  # (BT, K)
+
+            if not mask.any():
+                continue
+
+            token_indices = mask.any(dim=1).nonzero(as_tuple=False).squeeze(1)
+
+            if token_indices.numel() == 0:
+                continue
+
+            x_sel = x_flat[token_indices]
+
+            y_sel = self.experts[expert_id](x_sel)
+
+            # gather weights for this expert
+            w = torch.zeros(token_indices.size(0), device=x.device)
+
+            for k in range(self.top_k):
+                match = (topk_idx[token_indices, k] == expert_id)
+                w += match.float() * topk_vals[token_indices, k]
+
+            out_flat[token_indices] += y_sel * w.unsqueeze(1)
+
+        # reshape back
+        out = out_flat.view(B, T, D)
+
+        # centroid updates (use token features)
         with torch.no_grad():
-            self._epoch_usage_counts[uniq] += cnts.to(self._epoch_usage_counts.device)
-            self._cumulative_usage_counts[uniq] += cnts.to(self._cumulative_usage_counts.device)
+            for i in range(self.num_experts):
+                mask = (topk_idx == i)
+                if not mask.any():
+                    continue
 
-        # dispatch all tokens by sorting assignments to create contiguous chunks
-        out = torch.zeros_like(x)
-        if assigned.numel() > 0:
-            idx_sorted = assigned.argsort()
-            assigned_sorted = assigned[idx_sorted]
-            x_sorted = x[idx_sorted]
-            z_sorted = z[idx_sorted]
+                token_indices = mask.any(dim=1).nonzero(as_tuple=False).squeeze(1)
+                w = torch.zeros(token_indices.size(0), device=x.device)
 
-            # find contiguous split points where the expert id changes
-            if assigned_sorted.numel() > 1:
-                diffs = (assigned_sorted[1:] != assigned_sorted[:-1]).nonzero(as_tuple=False).squeeze(1) + 1
-                splits = torch.cat([
-                    torch.tensor([0], device=assigned.device, dtype=torch.long),
-                    diffs.to(device=assigned.device, dtype=torch.long),
-                    torch.tensor([assigned_sorted.size(0)], device=assigned.device, dtype=torch.long),
-                ])
-            else:
-                splits = torch.tensor([0, assigned_sorted.size(0)], device=assigned.device, dtype=torch.long)
+                for k in range(self.top_k):
+                    match = (topk_idx[token_indices, k] == i)
+                    w += match.float() * topk_vals[token_indices, k]
 
-            # process each contiguous chunk with the corresponding expert
-            for i in range(splits.size(0) - 1):
-                s = int(splits[i].item())
-                e = int(splits[i + 1].item())
-                expert_id = int(assigned_sorted[s].item())
-                x_sel = x_sorted[s:e]
-                y_sel = self.experts[expert_id](x_sel)
-                out[idx_sorted[s:e]] = y_sel
+                z_sel = x_norm[token_indices]
 
-            # update centroids using normalized image representations (avoid magnitude bias)
-            with torch.no_grad():
-                for i in range(splits.size(0) - 1):
-                    s = int(splits[i].item())
-                    e = int(splits[i + 1].item())
-                    expert_id = int(assigned_sorted[s].item())
-                    z_sel = z_sorted[s:e]
-                    if z_sel.numel() == 0:
-                        continue
-                    mu = F.normalize(z_sel, dim=1).mean(dim=0)
-                    self.c_fast[expert_id] = self.alpha_fast * self.c_fast[expert_id] + (1.0 - self.alpha_fast) * mu
-                    self.c_slow[expert_id] = self.alpha_slow * self.c_slow[expert_id] + (1.0 - self.alpha_slow) * mu
+                if w.sum() < 1e-6:
+                    continue
 
-        # normalize centroids and advance global step when training
-        with torch.no_grad():
+                mu = (w.unsqueeze(1) * z_sel).sum(dim=0) / (w.sum() + 1e-6)
+
+                self.c_fast[i] = self.alpha_fast * self.c_fast[i] + (1 - self.alpha_fast) * mu
+                self.c_slow[i] = self.alpha_slow * self.c_slow[i] + (1 - self.alpha_slow) * mu
+
             self.c_fast.copy_(F.normalize(self.c_fast, dim=1))
             self.c_slow.copy_(F.normalize(self.c_slow, dim=1))
+
+            # usage stats
+            self._epoch_usage_counts += torch.bincount(
+                topk_idx.view(-1),
+                minlength=self.num_experts
+            ).float()
+
             if self.training:
-                try:
-                    self._global_step += 1.0
-                except Exception:
-                    pass
+                self._global_step += 1
+
+        self._last_weights = weights.detach()
 
         return out
 
-    def router_balance_loss(self, strength: float = 1.0) -> torch.Tensor:
-        """Simple balancing loss based on image fractions assigned to experts."""
-        # Prefer batch-level counts (from last forward) for balancing; fallback to epoch stats
-        device = self._epoch_usage_counts.device
-        if self._last_assigned is not None:
-            counts = torch.bincount(self._last_assigned.to(device), minlength=self.num_experts).float()
-        else:
-            counts = self._epoch_usage_counts.float()
-        total = counts.sum()
-        if total == 0:
+    def router_balance_loss(self):
+        if self._last_weights is None:
             return torch.tensor(0.0, device=self.c_slow.device)
-        p = counts / total
-        target = torch.full_like(p, 1.0 / float(self.num_experts))
-        loss = ((p - target) ** 2).mean()
-        return strength * loss
 
-    def update_routing_temperature(self, epoch: int):
-        """Update the internally-stored routing temperature given the global epoch.
-
-        The temperature is annealed linearly from `routing_temp_init` down to
-        0 over `routing_anneal_epochs`. When the temperature reaches 0 the
-        routing falls back to hard argmax selection.
-        """
-        if self.routing_temp_init is None or self.routing_anneal_epochs <= 0:
-            return
-        try:
-            frac = max(0.0, 1.0 - float(epoch) / float(self.routing_anneal_epochs))
-            self.routing_temp = float(self.routing_temp_init) * frac
-        except Exception:
-            # be conservative and keep current temp on error
-            pass
-
-    def router_aux_loss(self, model_cfg: Optional[Dict] = None) -> torch.Tensor:
-        """Compute auxiliary centroid-based losses for this layer.
-
-        Returns a scalar tensor on the same device as centroids.
-        """
-        device = self.c_slow.device
-        N = self.num_experts
-
-        # allow overriding params from provided config dict
-        if model_cfg is None:
-            cfg = {}
-        else:
-            cfg = model_cfg
-        k = int(cfg.get('moe_repulsion_k', self.repulsion_k))
-        margin = float(cfg.get('moe_repulsion_margin', self.repulsion_margin))
-        lambda_fast = float(cfg.get('moe_lambda_fast', self.lambda_fast))
-        lambda_slow = float(cfg.get('moe_lambda_slow', self.lambda_slow))
-        lambda_align = float(cfg.get('moe_lambda_align', self.lambda_align))
-        lambda_cons = float(cfg.get('moe_lambda_cons', self.lambda_cons))
-        lambda_lb_init = float(cfg.get('moe_lambda_lb_init', self.lambda_lb_init))
-        # support annealing by steps (preferred) or epochs for backward compatibility
-        anneal_steps = float(cfg.get('moe_anneal_steps', cfg.get('moe_anneal_epochs', self.anneal_epochs)))
-
-        # L_fast and L_slow: local top-k repulsion on normalized centroids
-        cf = F.normalize(self.c_fast, dim=1)
-        cs = F.normalize(self.c_slow, dim=1)
-        S_fast = torch.matmul(cf, cf.t())
-        S_slow = torch.matmul(cs, cs.t())
-        # mask diagonal
-        eye = torch.eye(N, device=device, dtype=torch.bool)
-        S_fast_mask = S_fast.masked_fill(eye, -10.0)
-        S_slow_mask = S_slow.masked_fill(eye, -10.0)
-        k = min(max(1, k), N - 1)
-        topk_fast = torch.topk(S_fast_mask, k=k, dim=1).values
-        topk_slow = torch.topk(S_slow_mask, k=k, dim=1).values
-        L_fast = torch.clamp(topk_fast - margin, min=0.0).mean() if topk_fast.numel() > 0 else torch.tensor(0.0, device=device)
-        L_slow = torch.clamp(topk_slow - margin, min=0.0).mean() if topk_slow.numel() > 0 else torch.tensor(0.0, device=device)
-
-        # L_align: 1 - cosine(z, c_slow[assigned]) averaged over assigned images
-        L_align = torch.tensor(0.0, device=device)
-        if self._last_z is not None and self._last_assigned is not None:
-            z = self._last_z.to(device)
-            # optionally keep z detached for an initial warm-up period
-            try:
-                step = float(self._global_step.item()) if hasattr(self, '_global_step') else 0.0
-            except Exception:
-                step = 0.0
-            if step < float(getattr(self, 'detach_align_steps', 0)):
-                z = z.detach()
-            assigned = self._last_assigned.to(device)
-            # for each sample compute cosine with its assigned slow centroid
-            cs_sel = cs[assigned]
-            z_norm = F.normalize(z, dim=1)
-            cos = (z_norm * cs_sel).sum(dim=1)
-            L_align = (1.0 - cos).mean()
-
-        # L_cons: 1 - cosine(c_fast, c_slow) averaged over experts
-        cos_fs = (cf * cs).sum(dim=1)
-        L_cons = (1.0 - cos_fs).mean()
-
-        # L_balance: use batch-level counts (from last forward) for loss; fallback to epoch stats
-        if self._last_assigned is not None:
-            counts = torch.bincount(self._last_assigned.to(device), minlength=N).float()
-        else:
-            counts = self._epoch_usage_counts.float()
-        total = counts.sum()
-        if total == 0:
-            L_balance = torch.tensor(0.0, device=device)
-        else:
-            p = counts / total
-            u = torch.full_like(p, 1.0 / float(N))
-            # avoid log(0)
-            eps = 1e-9
-            L_balance = (p * torch.log(torch.clamp(p, min=eps) / u)).sum()
-
-        # annealed weight for balance (1.0 -> 0.0 over anneal_steps), annealed by global step
-        step = float(self._global_step.item()) if hasattr(self, '_global_step') else 0.0
-        ae = float(max(1.0, anneal_steps))
-        lambda_lb = lambda_lb_init * max(0.0, 1.0 - (step / ae))
-
-        loss = (lambda_fast * L_fast) + (lambda_slow * L_slow) + (lambda_align * L_align) + (lambda_cons * L_cons) + (lambda_lb * L_balance)
-        return loss
-
-    def get_and_reset_usage_counts(self) -> List[int]:
-        vals = self._epoch_usage_counts.detach().cpu().numpy().tolist()
-        # reset epoch counts and increment anneal step
-        self._epoch_usage_counts.zero_()
-        return vals
-
-
-class TransformerBlockImgMoE(nn.Module):
-    def __init__(self, dim, num_heads=4, mlp_ratio=4.0, attn_dropout=0.0, dropout=0.0, use_moe=True, moe_params=None):
-        super().__init__()
-        self.norm1 = nn.LayerNorm(dim)
-        self.attn = nn.MultiheadAttention(embed_dim=dim, num_heads=num_heads, batch_first=True, dropout=attn_dropout)
-        self.norm2 = nn.LayerNorm(dim)
-        hidden = int(dim * mlp_ratio)
-        if use_moe:
-            mp = moe_params or {}
-            self.mlp = ImageMoE(dim=dim, hidden_dim=hidden, **mp)
-        else:
-            self.mlp = MLP(dim, hidden, out_dim=dim, dropout=dropout)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x_res = x
-        x = self.norm1(x)
-        x_attn, _ = self.attn(x, x, x)
-        x = x_res + x_attn
-        x_res = x
-        x = self.norm2(x)
-        x = x_res + self.mlp(x)
-        return x
-
-
-class ViTImageMoE(nn.Module):
-    def __init__(self, *, img_size: Optional[int] = None, patch_size=16, in_chans=3, num_classes=1000,
-                 embed_dim=192, depth=8, num_heads=3, mlp_ratio=4.0,
-                 moe_layer_indices: Optional[Union[List[int], str]] = None,
-                 moe_params: Optional[dict] = None,
-                 use_class_token: bool = True):
-        super().__init__()
-        self.patch_embed = PatchEmbed(img_size=img_size, patch_size=patch_size, in_chans=in_chans, embed_dim=embed_dim)
-        self.use_class_token = use_class_token
-        if use_class_token:
-            self.cls_token = nn.Parameter(torch.zeros(1, 1, embed_dim))
-        else:
-            self.register_parameter('cls_token', None)
-        self.pos_embed = None
-        self.pos_drop = nn.Dropout(p=0.0)
-
-        if moe_layer_indices is None:
-            moe_layer_indices = list(range(depth))
-        elif isinstance(moe_layer_indices, str):
-            if moe_layer_indices == 'every_other':
-                moe_layer_indices = [i for i in range(depth) if (i % 2) == 1]
-            elif moe_layer_indices == 'all':
-                moe_layer_indices = list(range(depth))
-            else:
-                moe_layer_indices = list(range(depth))
-
-        self.blocks = nn.ModuleList()
-        for i in range(depth):
-            use_moe = i in moe_layer_indices
-            block = TransformerBlockImgMoE(dim=embed_dim, num_heads=num_heads, mlp_ratio=mlp_ratio, use_moe=use_moe, moe_params=moe_params)
-            self.blocks.append(block)
-
-        self.norm = nn.LayerNorm(embed_dim)
-        self.head = nn.Linear(embed_dim, num_classes)
-
-    def _init_pos_embed(self, seq_len: int, embed_dim: int):
-        device = None
-        for p in self.parameters():
-            device = p.device
-            break
-        if device is None:
-            device = torch.device('cpu')
-        self.pos_embed = nn.Parameter(torch.zeros(1, seq_len, embed_dim, device=device))
-        nn.init.trunc_normal_(self.pos_embed, std=0.02)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = self.patch_embed(x)
-        if self.use_class_token:
-            cls_tokens = self.cls_token.expand(x.size(0), -1, -1)
-            x = torch.cat([cls_tokens, x], dim=1)
-        seq_len = x.size(1)
-        if self.pos_embed is None or self.pos_embed.size(1) != seq_len:
-            self._init_pos_embed(seq_len, x.size(2))
-        x = x + self.pos_embed
-        x = self.pos_drop(x)
-        for blk in self.blocks:
-            x = blk(x)
-        x = self.norm(x)
-        cls = x[:, 0]
-        out = self.head(cls)
-        return out
-
-    # auxiliary helpers expected by the training infra ---------------------------------
-    def get_router_parameters(self):
-        return []
-
-    def freeze_routing(self, freeze: bool = True):
-        # nothing to freeze (centroids are buffers)
-        return
-
-    def adjust_router_learning_rate(self, optimizer: torch.optim.Optimizer, multiplier: float):
-        return optimizer
-
-    def router_balance_loss(self, strength: float = 1.0) -> torch.Tensor:
-        # aggregate layer-wise balance losses
-        loss = torch.tensor(0.0, device=next(self.parameters()).device)
-        found = False
-        device = None
-        for m in self.modules():
-            if isinstance(m, ImageMoE):
-                device = m.c_slow.device
-                loss = loss.to(device)
-                loss = loss + m.router_balance_loss(strength)
-                found = True
-        if not found:
-            return torch.tensor(0.0)
-        return loss
-
-    def router_aux_loss(self, model_cfg: Optional[dict] = None) -> torch.Tensor:
-        device = None
-        total = torch.tensor(0.0)
-        found = False
-        for m in self.modules():
-            if isinstance(m, ImageMoE):
-                device = m.c_slow.device
-                total = total.to(device)
-                total = total + m.router_aux_loss(model_cfg)
-                found = True
-        if not found:
-            return torch.tensor(0.0)
-        return total
+        p = self._last_weights.mean(dim=0)
+        target = torch.full_like(p, 1.0 / self.num_experts)
+        return ((p - target) ** 2).mean()
 
     def get_and_reset_usage_counts(self):
-        # collect per-layer usage counts; return list of per-layer lists
-        out = []
-        for m in self.modules():
-            if isinstance(m, ImageMoE):
-                out.append(m.get_and_reset_usage_counts())
-        return out
-
-    def get_cumulative_usage(self):
-        """Return cumulative usage per ImageMoE layer as list of lists (cpu ints)."""
-        out = []
-        for m in self.modules():
-            if isinstance(m, ImageMoE):
-                out.append(m._cumulative_usage_counts.detach().cpu().numpy().tolist())
-        return out
+        vals = self._epoch_usage_counts.detach().cpu().tolist()
+        self._epoch_usage_counts.zero_()
+        return vals
 
 
 def create_vit_moe_imagelevel(num_classes=10,
