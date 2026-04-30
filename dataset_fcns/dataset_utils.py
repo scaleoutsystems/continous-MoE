@@ -251,9 +251,11 @@ def compute_mean_std(dataset, batch_size=256, num_workers=0, force_resize=None):
 
     if force_resize is not None and hasattr(base_ds, 'transform'):
         try:
-            tmp_ops = []
-            tmp_ops.append(transforms.Resize(force_resize))
-            tmp_ops.append(transforms.ToTensor())
+            if isinstance(force_resize, int):
+                resize_arg = (force_resize, force_resize)
+            else:
+                resize_arg = tuple(force_resize)
+            tmp_ops = [transforms.Resize(resize_arg), transforms.ToTensor()]
             base_ds.transform = transforms.Compose(tmp_ops)
         except Exception:
             # If we cannot set the transform, continue and hope the
@@ -644,7 +646,7 @@ def create_dataloaders(config: Dict) -> Dict:
     num_workers_cfg = int(config.get("num_workers", 4))
     if resize > 0:
         trf = transforms.Compose([
-        transforms.Resize(resize),
+        transforms.Resize((resize, resize)),
         transforms.ToTensor(),
     ])
     else: 
