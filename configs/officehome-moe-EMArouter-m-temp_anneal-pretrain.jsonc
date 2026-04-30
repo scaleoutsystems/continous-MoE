@@ -80,7 +80,7 @@
     "repulsion_k": 2,
     "repulsion_margin": 0.15,
     "moe_lambda_fast": 0.00,
-    "moe_lambda_slow": 0.02,
+    "moe_lambda_slow": 0.04,
     "moe_lambda_align": 0.3,
     "moe_lambda_cons": 0.05,
     "moe_lambda_lb_init": 1.0,

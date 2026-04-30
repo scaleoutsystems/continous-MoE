@@ -124,9 +124,19 @@ class OfficeHomeDataset(torch.utils.data.Dataset):
     """
 
     def __init__(self, root: str, settings: List[str] = None, transform=None):
-        base = os.path.join(root, "OfficeHomeDataset_10072016")
-        if not os.path.isdir(base):
-            raise RuntimeError(f"OfficeHome root not found at {base}")
+        # support either nested layout <root>/OfficeHomeDataset_10072016/
+        # or <root>/OfficeHomeDataset_10072016/OfficeHomeDataset_10072016/
+        candidates = [
+            os.path.join(root, "OfficeHomeDataset_10072016", "OfficeHomeDataset_10072016"),
+            os.path.join(root, "OfficeHomeDataset_10072016"),
+        ]
+        base = None
+        for p in candidates:
+            if os.path.isdir(p):
+                base = p
+                break
+        if base is None:
+            raise RuntimeError(f"OfficeHome root not found at {candidates[0]} or {candidates[1]}")
 
         # discover available domains (folders under base)
         available_domains = [d for d in sorted(os.listdir(base)) if os.path.isdir(os.path.join(base, d))]
@@ -757,16 +767,6 @@ def create_dataloaders(config: Dict) -> Dict:
         num_workers=num_workers_cfg,
     )
 
-
-def ensure_officehome(root: str):
-    """Check for OfficeHome dataset presence under dataset_root."""
-    base = os.path.join(root, 'OfficeHomeDataset_10072016', 'OfficeHomeDataset_10072016') # unzipping weirdness
-    if not os.path.isdir(base):
-        raise RuntimeError(
-            "OfficeHome directory not found under dataset_root. "
-            "Please download OfficeHome and place it in '" + f"{base}'"
-        )
-
     # compute class distributions from the available indices (and pretrain indices)
     num_classes = config.get("model", {}).get("num_classes")
     if num_classes is None:
@@ -862,6 +862,25 @@ def ensure_officehome(root: str):
         "batch_size": batch_size,
         "partition_distributions": partition_distributions,
     }
+
+
+def ensure_officehome(root: str):
+    """Check for OfficeHome dataset presence under dataset_root.
+
+    Supports either nested or single-level layout and raises a
+    RuntimeError with guidance if missing.
+    """
+    candidates = [
+        os.path.join(root, 'OfficeHomeDataset_10072016', 'OfficeHomeDataset_10072016'),
+        os.path.join(root, 'OfficeHomeDataset_10072016'),
+    ]
+    for p in candidates:
+        if os.path.isdir(p):
+            return
+    raise RuntimeError(
+        "OfficeHome directory not found under dataset_root. "
+        "Please download OfficeHome and place it in one of: '" + f"{candidates[0]}' or '{candidates[1]}'"
+    )
 
 
 def plot_partition_distributions(train_loaders=None, test_loaders=None, num_classes=10, class_names=None, class_distributions=None):
