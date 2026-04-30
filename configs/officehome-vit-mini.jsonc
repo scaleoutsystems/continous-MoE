@@ -35,7 +35,7 @@
 
   // --------------------------------------------------------------------
   // Partitioning (pick one of these blocks)
-  "num_partitions": 11,
+  "num_partitions": 4,
   "partition": {
     // Dirichlet-split example:
     // "type": "dirichlet",
@@ -65,7 +65,7 @@
   // Model configuration
   "model": {
     "name": "vit_moe", // "convnext_tiny", "resnet18", "vit_moe"
-    "num_classes": 50,
+    "num_classes": 65,
     "pretrained": false,
     "embed_dim": 256, 
     "depth": 10, 

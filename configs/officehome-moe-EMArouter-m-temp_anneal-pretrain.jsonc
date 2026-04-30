@@ -36,7 +36,7 @@
 
   // --------------------------------------------------------------------
   // Partitioning (pick one of these blocks)
-  "num_partitions": 11,
+  "num_partitions": 4,
   "partition": {
     // Dirichlet-split example:
     // "type": "dirichlet",
@@ -66,11 +66,15 @@
   // Model configuration
   "model": {
     "name": "vit_moe_imagelevel",
-    "num_classes": 50,
+    "num_classes": 65,
     "pretrained": false,
     "patch_size": 16,
     "moe_layer_indices": [6,7,8,9],
     "num_experts": 4,
+    "embed_dim": 256, 
+    "depth": 10, 
+    "num_heads": 4, 
+    "mlp_ratio": 1.0,
     "alpha_fast": 0.8,
     "alpha_slow": 0.995,
     "repulsion_k": 2,
