@@ -223,24 +223,67 @@ class OfficeHomeDataset(torch.utils.data.Dataset):
         return img, int(label)
 
 
-def compute_mean_std(dataset, batch_size=256, num_workers=0):
-    """Compute per-channel mean and std for a data subset."""
+def compute_mean_std(dataset, batch_size=256, num_workers=0, force_resize=None):
+    """Compute per-channel mean and std for a data subset.
+
+    If ``force_resize`` is provided (int or tuple) this function will
+    temporarily set the underlying base dataset's ``transform`` to
+    ``Resize(force_resize) + ToTensor()`` so that all samples have a
+    consistent size for batching. The original transform is restored
+    after computation.
+    """
+
+    def _unwrap_base(ds):
+        cur = ds
+        for _ in range(20):
+            # common wrappers: Subset, SubsetWithTransform
+            if hasattr(cur, 'dataset'):
+                cur = cur.dataset
+                continue
+            if hasattr(cur, 'subset'):
+                cur = cur.subset
+                continue
+            break
+        return cur
+
+    base_ds = _unwrap_base(dataset)
+    orig_transform = getattr(base_ds, 'transform', None)
+
+    if force_resize is not None and hasattr(base_ds, 'transform'):
+        try:
+            tmp_ops = []
+            tmp_ops.append(transforms.Resize(force_resize))
+            tmp_ops.append(transforms.ToTensor())
+            base_ds.transform = transforms.Compose(tmp_ops)
+        except Exception:
+            # If we cannot set the transform, continue and hope the
+            # DataLoader can collate (fallback behaviour).
+            base_ds.transform = orig_transform
+
     loader = DataLoader(dataset, batch_size=batch_size, shuffle=False,
                         num_workers=num_workers, pin_memory=True)
     n_samples = 0
     mean = torch.zeros(3)
     m2 = torch.zeros(3)
 
-    for x, _ in loader:
-        x = x.float()
-        batch_samples = x.size(0)
-        x = x.view(batch_samples, x.size(1), -1)
-        batch_mean = x.mean(2).sum(0)
-        batch_var = x.var(2, unbiased=False).sum(0)
+    try:
+        for x, _ in loader:
+            x = x.float()
+            batch_samples = x.size(0)
+            x = x.view(batch_samples, x.size(1), -1)
+            batch_mean = x.mean(2).sum(0)
+            batch_var = x.var(2, unbiased=False).sum(0)
 
-        mean += batch_mean
-        m2 += batch_var
-        n_samples += batch_samples
+            mean += batch_mean
+            m2 += batch_var
+            n_samples += batch_samples
+    finally:
+        # restore original transform if we modified it
+        try:
+            if force_resize is not None and hasattr(base_ds, 'transform'):
+                base_ds.transform = orig_transform
+        except Exception:
+            pass
 
     if n_samples == 0:
         return [0.5, 0.5, 0.5], [0.5, 0.5, 0.5]
@@ -820,10 +863,35 @@ def create_dataloaders(config: Dict) -> Dict:
         train_idx.extend(list(pretrain_loader.dataset.indices))
 
     if train_idx:
-        train_stats = compute_mean_std(Subset(dataset, train_idx), batch_size=batch_size, num_workers=0)
+        # Check for cached mean/std file in the dataset root so we don't
+        # recompute mean/std on every run. Cache name includes resize
+        # when provided since statistics depend on preprocessing size.
+        cache_suffix = f"_resize{resize}" if (resize and resize > 0) else ""
+        cache_fname = f"{lname}_mean_std{cache_suffix}.npz"
+        cache_path = os.path.join(root, cache_fname)
+        loaded_cache = False
+        if os.path.exists(cache_path):
+            try:
+                arr = np.load(cache_path)
+                train_mean = arr['mean'].tolist()
+                train_std = arr['std'].tolist()
+                loaded_cache = True
+            except Exception:
+                print(f"Warning: failed to load cached mean/std from {cache_path}; recomputing.")
+
+        if not loaded_cache:
+            train_mean, train_std = compute_mean_std(
+                Subset(dataset, train_idx),
+                batch_size=batch_size,
+                num_workers=0,
+                force_resize=(resize if (resize and resize > 0) else None),
+            )
+            try:
+                np.savez(cache_path, mean=np.array(train_mean), std=np.array(train_std))
+            except Exception as e:
+                print(f"Warning: could not save mean/std to {cache_path}: {e}")
     else:
-        train_stats = ([0.5, 0.5, 0.5], [0.5, 0.5, 0.5])
-    train_mean, train_std = train_stats
+        train_mean, train_std = [0.5, 0.5, 0.5], [0.5, 0.5, 0.5]
 
     augmentation_ops = build_augmentation_transform(config)
     if augmentation_ops is not None:
@@ -841,7 +909,12 @@ def create_dataloaders(config: Dict) -> Dict:
     for loader in test_loaders:
         ds = loader.dataset
         if hasattr(ds, 'indices') and len(ds.indices) > 0:
-            mean, std = compute_mean_std(ds, batch_size=batch_size, num_workers=0)
+            mean, std = compute_mean_std(
+                ds,
+                batch_size=batch_size,
+                num_workers=0,
+                force_resize=(resize if (resize and resize > 0) else None),
+            )
         else:
             mean, std = [0.5, 0.5, 0.5], [0.5, 0.5, 0.5]
         test_transform = transforms.Normalize(mean, std)
