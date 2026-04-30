@@ -113,6 +113,106 @@ class Core50Dataset(torch.utils.data.Dataset):
         return img, int(label)
 
 
+class OfficeHomeDataset(torch.utils.data.Dataset):
+    """Dataset wrapper for OfficeHome (OfficeHomeDataset_10072016).
+
+    Expects layout: <root>/OfficeHomeDataset_10072016/OfficeHomeDataset_10072016/
+    with domain folders (e.g., Art, Clipart, Product, Real World) and
+    class subfolders inside each domain. The dataset exposes a
+    `session_to_indices` mapping for compatibility with domainIncremental
+    partitioning used for CORe50.
+    """
+
+    def __init__(self, root: str, settings: List[str] = None, transform=None):
+        base = os.path.join(root, "OfficeHomeDataset_10072016", "OfficeHomeDataset_10072016")
+        if not os.path.isdir(base):
+            raise RuntimeError(f"OfficeHome root not found at {base}")
+
+        # discover available domains (folders under base)
+        available_domains = [d for d in sorted(os.listdir(base)) if os.path.isdir(os.path.join(base, d))]
+
+        # normalize requested settings/domains: accept names or indices
+        if settings is None:
+            selected_domains = available_domains
+        else:
+            sel = []
+            for s in settings:
+                if isinstance(s, int) or (isinstance(s, str) and str(s).isdigit()):
+                    try:
+                        idx = int(s)
+                        if 0 <= idx < len(available_domains):
+                            sel.append(available_domains[idx])
+                    except Exception:
+                        continue
+                elif isinstance(s, str):
+                    # try exact then case-insensitive match
+                    if s in available_domains:
+                        sel.append(s)
+                    else:
+                        found = next((d for d in available_domains if d.lower() == s.lower()), None)
+                        if found:
+                            sel.append(found)
+                        else:
+                            print(f"Warning: OfficeHome domain {s} not found; skipping")
+                else:
+                    print(f"Warning: Unsupported settings entry {s}; skipping")
+            selected_domains = sel if sel else available_domains
+
+        self.domains = selected_domains
+        self.transform = transform
+
+        # collect class names across domains to build a consistent label mapping
+        class_set = set()
+        for dname in self.domains:
+            dpath = os.path.join(base, dname)
+            if not os.path.isdir(dpath):
+                print(f"Warning: OfficeHome domain directory missing: {dpath}")
+                continue
+            for c in sorted(os.listdir(dpath)):
+                if os.path.isdir(os.path.join(dpath, c)):
+                    class_set.add(c)
+
+        self.classes = sorted(list(class_set))
+        label_map = {c: i for i, c in enumerate(self.classes)}
+
+        # build samples and domain->indices mapping (session_to_indices for compatibility)
+        self.samples = []  # list of (path, label, domain_name)
+        self.session_to_indices = {}
+        for dname in self.domains:
+            dpath = os.path.join(base, dname)
+            if not os.path.isdir(dpath):
+                self.session_to_indices[dname] = []
+                continue
+            indices = []
+            for c in sorted(os.listdir(dpath)):
+                cdir = os.path.join(dpath, c)
+                if not os.path.isdir(cdir):
+                    continue
+                label = label_map.get(c, None)
+                if label is None:
+                    continue
+                for fn in sorted(os.listdir(cdir)):
+                    if not fn.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp')):
+                        continue
+                    path = os.path.join(cdir, fn)
+                    idx = len(self.samples)
+                    self.samples.append((path, label, dname))
+                    indices.append(idx)
+            self.session_to_indices[dname] = indices
+
+        self.targets = [t for (_, t, _) in self.samples]
+
+    def __len__(self):
+        return len(self.samples)
+
+    def __getitem__(self, idx):
+        path, label, domain = self.samples[idx]
+        img = Image.open(path).convert('RGB')
+        if self.transform is not None:
+            img = self.transform(img)
+        return img, int(label)
+
+
 def compute_mean_std(dataset, batch_size=256, num_workers=0):
     """Compute per-channel mean and std for a data subset."""
     loader = DataLoader(dataset, batch_size=batch_size, shuffle=False,
@@ -527,6 +627,10 @@ def create_dataloaders(config: Dict) -> Dict:
         # top-level `settings` key in the config (e.g. "settings": [1,2,4,8]).
         settings = config.get("settings", None)
         dataset = Core50Dataset(root, settings=settings, transform=trf)
+    elif lname in ("officehome", "officehomedataset", "officehome_10072016", "office-home"):
+        ensure_officehome(root)
+        settings = config.get("settings", None)
+        dataset = OfficeHomeDataset(root, settings=settings, transform=trf)
     else:
         raise ValueError(f"Unsupported dataset {name}")
 
@@ -592,32 +696,38 @@ def create_dataloaders(config: Dict) -> Dict:
     elif p_type == "static":
         indices_lists = static_split(available_indices, num_parts, seed=partition_seed)
     elif p_type == "domainIncremental":
-        # Domain-incremental partitioning: intended for CORe50 where each
-        # session/setting (s1..s11) is a different location/domain. The
-        # config must supply `settings` (list of session numbers) or the
-        # dataset will default to sessions found on disk. The number of
-        # partitions must divide the number of settings evenly.
-        if lname != "core50":
-            raise ValueError("domainIncremental partitioning is only supported for CORe50 dataset")
+        # Domain-incremental partitioning: supported for datasets that expose
+        # a `session_to_indices` mapping (e.g., CORe50 and OfficeHome). The
+        # config may supply `settings` (list of domain identifiers) or the
+        # dataset will default to the domains/sessions found on disk. The
+        # number of partitions must divide the number of settings evenly.
+        if not hasattr(dataset, 'session_to_indices'):
+            raise ValueError("domainIncremental partitioning is only supported for datasets exposing 'session_to_indices' mapping (e.g., core50 or officehome)")
+
         settings_list = config.get("settings", None)
         if settings_list is None:
             # infer from dataset if possible
-            if hasattr(dataset, 'session_to_indices'):
-                settings_list = sorted(list(dataset.session_to_indices.keys()))
-            else:
-                settings_list = list(range(1, 12))
-        settings_list = [int(s) for s in settings_list]
+            settings_list = sorted(list(dataset.session_to_indices.keys()))
+
+        # if dataset sessions are integer-like keys (CORe50), cast settings
+        # to ints where appropriate, otherwise keep strings for datasets
+        # like OfficeHome which use domain names.
+        try:
+            if all(isinstance(k, int) for k in dataset.session_to_indices.keys()):
+                settings_list = [int(s) for s in settings_list]
+        except Exception:
+            pass
+
         if len(settings_list) % num_parts != 0:
             raise RuntimeError(f"Number of settings ({len(settings_list)}) is not divisible by num_partitions ({num_parts})")
         per = len(settings_list) // num_parts
-        # map sessions to available indices (exclude pretrain indices)
+
+        # map sessions/domains to available indices (exclude pretrain indices)
         sess_to_avail = {}
         for s in settings_list:
-            if hasattr(dataset, 'session_to_indices'):
-                sess_idxs = [i for i in dataset.session_to_indices.get(s, []) if i in available_indices]
-            else:
-                sess_idxs = [i for i in available_indices if f"/s{s}/" in getattr(dataset, 'samples', [('', 0, None)])[i][0]]
+            sess_idxs = [i for i in dataset.session_to_indices.get(s, []) if i in available_indices]
             sess_to_avail[s] = sess_idxs
+
         indices_lists = []
         for i in range(num_parts):
             part_settings = settings_list[i*per:(i+1)*per]
@@ -646,6 +756,16 @@ def create_dataloaders(config: Dict) -> Dict:
         seed=loader_seed,
         num_workers=num_workers_cfg,
     )
+
+
+def ensure_officehome(root: str):
+    """Check for OfficeHome dataset presence under dataset_root."""
+    base = os.path.join(root, 'OfficeHomeDataset_10072016', 'OfficeHomeDataset_10072016') # unzipping weirdness
+    if not os.path.isdir(base):
+        raise RuntimeError(
+            "OfficeHome directory not found under dataset_root. "
+            "Please download OfficeHome and place it in '" + f"{base}'"
+        )
 
     # compute class distributions from the available indices (and pretrain indices)
     num_classes = config.get("model", {}).get("num_classes")
