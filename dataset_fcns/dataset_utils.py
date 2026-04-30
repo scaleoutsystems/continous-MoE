@@ -124,7 +124,7 @@ class OfficeHomeDataset(torch.utils.data.Dataset):
     """
 
     def __init__(self, root: str, settings: List[str] = None, transform=None):
-        base = os.path.join(root, "OfficeHomeDataset_10072016", "OfficeHomeDataset_10072016")
+        base = os.path.join(root, "OfficeHomeDataset_10072016")
         if not os.path.isdir(base):
             raise RuntimeError(f"OfficeHome root not found at {base}")
 
