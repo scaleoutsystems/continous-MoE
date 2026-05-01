@@ -65,7 +65,7 @@
   // Model configuration
   "model": {
     "name": "vit_moe", // "convnext_tiny", "resnet18", "vit_moe"
-    "num_classes": 50,
+    "num_classes": 65,
     "pretrained": false,
     "embed_dim": 256, 
     "depth": 10, 

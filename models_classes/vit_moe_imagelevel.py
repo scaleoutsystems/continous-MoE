@@ -555,7 +555,7 @@ def create_vit_moe_imagelevel(num_classes=10,
                               **kwargs):
     moe_params = {
         'num_experts': int(num_experts),
-        'route_with_cls_token': True,
+        'route_with_cls_token': False,
         'alpha_fast': float(alpha_fast),
         'alpha_slow': float(alpha_slow),
         'repulsion_k': int(repulsion_k),

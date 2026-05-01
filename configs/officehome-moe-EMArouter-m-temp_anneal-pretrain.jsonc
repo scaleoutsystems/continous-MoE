@@ -79,18 +79,19 @@
     "alpha_slow": 0.995,
     "repulsion_k": 2,
     "repulsion_margin": 0.15,
-    "moe_lambda_fast": 0.00,
-    "moe_lambda_slow": 0.04,
+    "moe_lambda_fast": 0.01,
+    "moe_lambda_slow": 0.03,
     "moe_lambda_align": 0.3,
     "moe_lambda_cons": 0.05,
-    "moe_lambda_lb_init": 1.0,
+    "moe_lambda_lb_init": 0.1,
     "moe_anneal_epochs": 10,
     "detach_align_steps": 10
     ,
     // routing temperature annealing (initial temperature and anneal epochs)
     "routing_temp": 1.0, // initial temperature
     "routing_anneal_epochs": 2, // number of epochs to anneal over - if 0 then argmax
-    "moe_expert_lr_multiplier": 3.0
+    "moe_expert_lr_multiplier": 3.0,
+    "route_with_cls_token": false
     // "routing_sample": true, // sample routing instead of argmax
     // "argmax_routing_start_epoch": 2 // start argmax instead of sampling at this epoch
   },

@@ -50,35 +50,36 @@ class DIL_Logger:
         all_targets = []
         expert_usage = None
 
-        for loader in loaders:
-            correct, total = 0, 0
+        with torch.inference_mode():
+            for loader in loaders:
+                correct, total = 0, 0
 
-            for x, y in loader:
-                x, y = x.to(device), y.to(device)
-                logits = model(x)
-                preds = logits.argmax(1)
+                for x, y in loader:
+                    x, y = x.to(device), y.to(device)
+                    logits = model(x)
+                    preds = logits.argmax(1)
 
-                correct += (preds == y).sum().item()
-                total += y.size(0)
+                    correct += (preds == y).sum().item()
+                    total += y.size(0)
 
-                total_correct += (preds == y).sum().item()
-                total_samples += y.size(0)
+                    total_correct += (preds == y).sum().item()
+                    total_samples += y.size(0)
 
-                all_preds.append(preds.cpu())
-                all_targets.append(y.cpu())
+                    all_preds.append(preds.cpu())
+                    all_targets.append(y.cpu())
 
-            domain_acc.append(correct / total)
+                domain_acc.append(correct / total)
 
-            # collect per-domain expert usage immediately after evaluating this loader
-            if hasattr(model, "get_and_reset_usage_counts"):
-                try:
-                    if expert_usage is None:
-                        expert_usage = []
-                    # get usage counts for this domain (resets epoch counters in model)
-                    domain_usage = model.get_and_reset_usage_counts()
-                    expert_usage.append(domain_usage)
-                except Exception:
-                    pass
+                # collect per-domain expert usage immediately after evaluating this loader
+                if hasattr(model, "get_and_reset_usage_counts"):
+                    try:
+                        if expert_usage is None:
+                            expert_usage = []
+                        # get usage counts for this domain (resets epoch counters in model)
+                        domain_usage = model.get_and_reset_usage_counts()
+                        expert_usage.append(domain_usage)
+                    except Exception:
+                        pass
 
         overall_acc = total_correct / total_samples
 
