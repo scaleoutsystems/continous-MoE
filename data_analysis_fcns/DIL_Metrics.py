@@ -472,14 +472,15 @@ def plot_population_statistics(config_names, results_root='results', labels=None
 
     # find result files for each config name
     config_runs = {cn: [] for cn in config_names}
+
     for root, _, files in os.walk(results_root):
-        for f in files:
-            if not f.endswith('.pt'):
-                continue
-            path = os.path.join(root, f)
-            for cn in config_names:
-                if cn in root or cn in f:
-                    config_runs[cn].append(path)
+        folder_name = os.path.basename(root)  # Get the name of the current folder
+        for cn in config_names:
+            if folder_name == cn:  # Ensure an exact match with the config name
+                for f in files:
+                    if f.endswith('.pt'):  # Only consider files that end with '.pt'
+                        path = os.path.join(root, f)
+                        config_runs[cn].append(path)
 
     # load histories and optionally epoch_confusions per run
     aggregated = {}

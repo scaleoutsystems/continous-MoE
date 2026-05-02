@@ -1,0 +1,169 @@
+{
+  // --------------------------------------------------------------------
+  // Seeds (optional): global defaults and per-stage overrides
+  "seeds": {
+    // any seed value of 0 (or the string "random") means "do not set a
+    // seed"; this allows parts of the pipeline to remain nondeterministic.
+    "global": 0,
+    "dataset": 1,
+    "partition": 2,
+    "model": 3,
+    "pretrain": 4,
+    "training": 5
+    //"replay": 123
+  },
+
+  // --------------------------------------------------------------------
+  // Dataset specification
+  // For OfficeHome use (OfficeHomeDataset_10072016):
+  "dataset": "officehome",
+  "dataset_root": "./datasets",
+  "settings": ["Art","Clipart","Product","Real World"], // domains to include
+  // Note: when using partition.type == "domainIncremental" the number of
+  // settings must be divisible by "num_partitions" so domains can be
+  // evenly split across partitions.
+  "resize": 128, // 0 = no resize. This resize affects all images
+
+  "augmentation": {
+    "random_resize_crop": true,
+    "random_crop": false,
+    "resize": 128, // affects both random_resize_crop and random_crop
+    "random_flip": true,
+    "color_jitter": true,
+    "blur": false,
+    "noise": false
+  },
+
+  // --------------------------------------------------------------------
+  // Partitioning (pick one of these blocks)
+  "num_partitions": 4,
+  "partition": {
+    // Dirichlet-split example:
+    // "type": "dirichlet",
+    // "alpha": 0.3,
+    // "min_size": 10,
+    // "balanced": false
+
+    // Static / contiguous split example:
+    // "type": "static"
+
+    // Domain incremental example:
+    "type": "domainIncremental"
+    // note that the number of settings must be divisible by num_partitions
+
+
+    // "type": "dirichlet",
+    // "alpha": 0.3,
+    // "min_size": 700,
+    // "balanced": true
+  },
+
+  "train_frac": 0.8,
+  "batch_size": 128,
+  "shuffle": true,
+
+  // --------------------------------------------------------------------
+  // Model configuration
+  "model": {
+    "name": "vit_moe_imagelevel",
+    "num_classes": 65,
+    "pretrained": false,
+    "patch_size": 16,
+    "moe_layer_indices": [6,7,8,9],
+    "num_experts": 4,
+    "embed_dim": 256, 
+    "depth": 10, 
+    "num_heads": 4, 
+    "mlp_ratio": 1.0,
+    "alpha_fast": 0.8,
+    "alpha_slow": 0.995,
+    "repulsion_k": 2,
+    "repulsion_margin": 0.15,
+    "moe_lambda_fast": 0.01,
+    "moe_lambda_slow": 0.03,
+    "moe_lambda_align": 0.3,
+    "moe_lambda_cons": 0.05,
+    "moe_lambda_lb_init": 0.1,
+    "moe_anneal_epochs": 10,
+    "detach_align_steps": 10
+    ,
+    // routing temperature annealing (initial temperature and anneal epochs)
+    "routing_temp": 1.0, // initial temperature
+    "routing_anneal_epochs": 2, // number of epochs to anneal over - if 0 then argmax
+    "moe_expert_lr_multiplier": 3.0,
+    "route_with_cls_token": false
+    // "routing_sample": true, // sample routing instead of argmax
+    // "argmax_routing_start_epoch": 2 // start argmax instead of sampling at this epoch
+  },
+  // --------------------------------------------------------------------
+  // Loss and learning rate
+  "loss": {
+    "name": "weighted_cross_entropy", // options: "cross_entropy", "weighted_cross_entropy", "focal"
+    "lr": 0.0001,
+    // set to true to enable per-class weighting based on partition distribution
+    "weighted": true,
+    // upper limit applied when computing inverse-frequency weights
+    "weight_upper_limit": 20.0,
+    // if true new weights will be averaged with the previous set
+    "weight_cumulative": false,
+
+    // focal-loss specific parameters (ignored for plain CE)
+    // "alpha" may be a scalar, an array of length num_classes, or the
+    // string "auto"/null.  In the latter case the alpha values are computed
+    // from the current partition's class counts, identical to the behaviour
+    // of the weighted cross-entropy loss.
+
+    "alpha": "auto",
+    "gamma": 2.0
+  },
+
+  // --------------------------------------------------------------------
+  // Optimizer
+  "optimizer": {
+    "name": "adamw"          // "adam", "adamw", or "sgd"
+    // "momentum": 0.9        // only for SGD
+  },
+
+  // --------------------------------------------------------------------
+  // Scheduler (optional)
+  // "scheduler": {
+  //   "name": null 
+    // "cosine" for CosineAnnealingLR
+    // Used for CosineAnnealing; if null, uses epochs_per_domain as T_max
+    //"T_max": null
+  // },
+
+  "pretrain": {
+    "enabled": true,
+    "num_samples": 2000,
+    "with_replacement": false,
+    "epochs": 7 // specific to just pretraining. If 0 or null or missing, uses epochs_per_domain
+  },
+
+  "pretrain_scheduler": {
+    "name": "linear", // e.g. "cosine", "step", "linear"
+    "start_factor": 0.1,
+    "end_factor": 1.0
+  },
+
+  "epochs_per_domain": 5,
+
+  // --------------------------------------------------------------------
+  // Continual learning options
+  "router_balancing": false,
+  "router_balance_strength": 0.0,
+  "router_freeze_after_epochs": null,
+  // set to a value <1 to slow router learning; 0 is equivalent to freezing
+  "router_lr_multiplier": 0.0,
+  // optionally change the multiplier at a particular epoch (useful for
+  // scheduling); null means never change midrun
+  "router_lr_multiplier_after_epochs": 0,
+
+  // --------------------------------------------------------------------
+  // Baseline reference (enable to compute FWT/intransience)
+  "baseline": {
+    "enabled": true,
+    "train": true,
+    "accuracies": null
+  }
+}
