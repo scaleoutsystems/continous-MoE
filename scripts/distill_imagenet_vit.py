@@ -3,17 +3,26 @@
 Distill a pretrained DeiT3 teacher to ViT students on ImageNet.
 
 Example headless run (1 GPU, torchrun):
-  torchrun --nproc_per_node=1 scripts/distill_imagenet_vit.py \
-    --student-mlp 8 --epochs 80 --per-gpu-batch 256 --desired-batch 512 \
-    --data-path /datasets --save-dir ./checkpoints
 
-    torchrun --nproc_per_node=1 scripts/distill_imagenet_vit.py \
-  --student-mlp 8 --epochs 80 --per-gpu-batch 256 --desired-batch 512 \
-  --data-path /datasets --save-dir ./checkpoints
+nohup python scripts/distill_imagenet_vit.py \
+  --student-mlp 8 \
+  --epochs 80 \
+  --per-gpu-batch 64 \
+  --desired-batch 256 \
+  --data-path ./data \
+  --save-dir ./checkpoints \
+  > train.log 2>&1 &
 
-  torchrun --nproc_per_node=1 scripts/distill_imagenet_vit.py \
-  --student-mlp 2 --epochs 100 --per-gpu-batch 256 --desired-batch 256 \
-  --data-path /datasets --save-dir ./checkpoints
+nohup python scripts/distill_imagenet_vit.py \
+  --student-mlp 2 \
+  --epochs 80 \
+  --per-gpu-batch 64 \
+  --desired-batch 256 \
+  --data-path ./data \
+  --save-dir ./checkpoints \
+  > train.log 2>&1 &
+
+python scripts/distill_imagenet_vit.py   --student-mlp 2   --epochs 80   --per-gpu-batch 256   --desired-batch 512   --data-path ./datasets   --save-dir ./checkpoints
 
 Requirements:
   pip install torch torchvision timm
@@ -70,7 +79,7 @@ def parse_args():
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--resume", default=None, help="resume checkpoint path")
     p.add_argument("--no-mixup", action="store_true")
-    p.add_argument("--hf-id", default="imagenet-100", help="Hugging Face dataset id to use (default: imagenet-100)")
+    p.add_argument("--hf-id", default="clane9/imagenet-100", help="Hugging Face dataset id to use (default: imagenet-100)")
     p.add_argument("--hf-cache-name", default="imagenet100_hf", help="local folder name under data-path to cache HF dataset")
     p.add_argument("--local_rank", type=int, default=int(os.environ.get('LOCAL_RANK', 0)))
     return p.parse_args()
@@ -170,9 +179,13 @@ class HFImageDataset(TorchDataset):
         # HF Image feature may be PIL.Image.Image or numpy array
         if isinstance(img, np.ndarray):
             img = Image.fromarray(img)
+
         elif isinstance(img, dict) and 'bytes' in img:
-            # some arrow encodings
-            img = Image.open(io.BytesIO(img['bytes'])).convert('RGB')
+            img = Image.open(io.BytesIO(img['bytes']))
+
+        # FORCE RGB HERE
+        if isinstance(img, Image.Image):
+            img = img.convert("RGB")
 
         if self.transform is not None:
             img = self.transform(img)
@@ -202,7 +215,7 @@ def _load_or_cache_hf_imagenet(hf_id, data_root, cache_name, is_main):
         print(f"Downloading Hugging Face dataset '{hf_id}' and caching to {save_root} (this may take a while)")
 
     # Attempt to load dataset; try multiple split keys if needed
-    ds = hf_datasets.load_dataset(hf_id)
+    ds = hf_datasets.load_dataset("clane9/imagenet-100")
     # ds is usually a DatasetDict
     if isinstance(ds, dict) or hasattr(ds, 'keys'):
         # prefer 'train' and 'validation' splits
@@ -244,6 +257,9 @@ def make_dataloaders(data_path, per_gpu_bs, num_workers, distributed, hf_id='ima
     train_t, val_t = build_transforms()
 
     is_main = (int(os.environ.get('RANK', '0')) == 0)
+    train_dataset = []
+    val_dataset = []
+
     try:
         train_hf, val_hf = _load_or_cache_hf_imagenet(hf_id, data_path, hf_cache_name, is_main)
         train_dataset = HFImageDataset(train_hf, transform=train_t)
@@ -252,25 +268,15 @@ def make_dataloaders(data_path, per_gpu_bs, num_workers, distributed, hf_id='ima
             print(f"Using Hugging Face dataset '{hf_id}' with {len(train_dataset)} train and {len(val_dataset)} val samples")
     except Exception as e:
         if is_main:
-            print(f"Failed to load HF dataset '{hf_id}': {e}. Falling back to ImageFolder under ILSVRC2012/*")
-        train_dir = os.path.join(data_path, "ILSVRC2012/train")
-        val_dir = os.path.join(data_path, "ILSVRC2012/val")
-        train_dataset = tv_datasets.ImageFolder(train_dir, transform=train_t)
-        val_dataset = tv_datasets.ImageFolder(val_dir, transform=val_t)
+            print(f"Failed to load HF dataset '{hf_id}': {e}.")
+            raise e
 
-    if distributed:
-        train_sampler = DistributedSampler(train_dataset)
-        val_sampler = DistributedSampler(val_dataset, shuffle=False)
-    else:
-        train_sampler = None
-        val_sampler = None
-
-    train_loader = DataLoader(train_dataset, batch_size=per_gpu_bs, shuffle=(train_sampler is None),
-                              num_workers=num_workers, pin_memory=True, sampler=train_sampler)
+    train_loader = DataLoader(train_dataset, batch_size=per_gpu_bs, shuffle=True,
+                              num_workers=num_workers, pin_memory=True)
     val_loader = DataLoader(val_dataset, batch_size=per_gpu_bs, shuffle=False,
-                            num_workers=num_workers, pin_memory=True, sampler=val_sampler)
+                            num_workers=num_workers, pin_memory=True)
 
-    return train_loader, val_loader, train_sampler, val_sampler
+    return train_loader, val_loader
 
 
 def create_teacher(device):
@@ -372,7 +378,7 @@ def main():
         print("Arguments:", args)
 
     # dataloaders (prefer HF imagenet-100 cached under data-path)
-    train_loader, val_loader, train_sampler, val_sampler = make_dataloaders(
+    train_loader, val_loader = make_dataloaders(
         args.data_path, args.per_gpu_batch, args.num_workers, args.distributed,
         hf_id=args.hf_id, hf_cache_name=args.hf_cache_name)
 
@@ -420,8 +426,6 @@ def main():
     val_epochs = []
 
     for epoch in range(args.epochs):
-        if train_sampler is not None:
-            train_sampler.set_epoch(epoch)
 
         student.train()
         epoch_loss = 0.0
