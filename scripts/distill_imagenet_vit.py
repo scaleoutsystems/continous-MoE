@@ -272,7 +272,7 @@ def make_dataloaders(data_path, per_gpu_bs, num_workers, distributed, hf_id='ima
             raise e
 
     train_loader = DataLoader(train_dataset, batch_size=per_gpu_bs, shuffle=True,
-                              num_workers=num_workers, pin_memory=True)
+                              num_workers=num_workers, pin_memory=True, drop_last=True)
     val_loader = DataLoader(val_dataset, batch_size=per_gpu_bs, shuffle=False,
                             num_workers=num_workers, pin_memory=True)
 
@@ -280,7 +280,7 @@ def make_dataloaders(data_path, per_gpu_bs, num_workers, distributed, hf_id='ima
 
 
 def create_teacher(device):
-    teacher = timm.create_model('deit3_small_patch16_224', pretrained=True, num_classes=1000)
+    teacher = timm.create_model('deit3_small_patch16_224', pretrained=True, num_classes=100)
     teacher.to(device)
     teacher.eval()
     for p in teacher.parameters():
@@ -290,7 +290,7 @@ def create_teacher(device):
 
 def create_student(mlp_ratio):
     # create a ViT and override depth/heads/embed and mlp_ratio
-    model = timm.create_model('vit_tiny_patch16_224', pretrained=False, num_classes=1000,
+    model = timm.create_model('vit_tiny_patch16_224', pretrained=False, num_classes=100,
                               embed_dim=192, depth=12, num_heads=3, mlp_ratio=mlp_ratio)
     return model
 
@@ -417,7 +417,7 @@ def main():
     mixup_fn = None
     if not args.no_mixup:
         mixup_fn = Mixup(mixup_alpha=1.0, cutmix_alpha=1.0, prob=1.0, switch_prob=0.5,
-                         mode='batch', label_smoothing=0.1, num_classes=1000)
+                         mode='batch', label_smoothing=0.1, num_classes=100)
 
     best_val = -1.0
     global_update = 0
