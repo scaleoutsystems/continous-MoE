@@ -91,6 +91,7 @@ def create_model(config: Dict):
         p = mcfg.copy()
         # remove the name field, not used by factory
         p.pop("name", None)
+        # pass through pretrained_vit flags if present
         return create_moe_vit(**p)["model"]
 
     elif name in ("vit_moe_imagelevel", "vit_moe_img"):

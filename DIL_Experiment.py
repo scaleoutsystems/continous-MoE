@@ -22,6 +22,7 @@ from datetime import datetime
 import torch
 import numpy as np
 import random
+import math
 
 from data_analysis_fcns.DIL_Logger import DIL_Logger
 from dataset_fcns.replay import ReplayBuffer
@@ -159,6 +160,11 @@ def main():
         # model/optimizer/criterion from setup
         model = setup["model"].to(device)
         optimizer = setup["optimizer"]
+        # capture initial optimizer group learning rates for warmup scheduling
+        try:
+            optimizer_initial_group_lrs = [g.get('lr', 0.0) for g in optimizer.param_groups]
+        except Exception:
+            optimizer_initial_group_lrs = None
         criterion = setup["criterion"]
         if hasattr(criterion, "to"):
             criterion = criterion.to(device)
@@ -209,7 +215,7 @@ def main():
                             rx, ry = rx.to(device), ry.to(device)
                             rlogits = model(rx)
                             loss = loss + criterion(rlogits, ry)
-                    aux = compute_aux_loss(model, cfg)
+                    aux = compute_aux_loss(model, cfg, epoch=global_epoch)
                     if isinstance(aux, torch.Tensor):
                         loss = loss + aux
                     loss.backward()
@@ -261,6 +267,11 @@ def main():
                 except Exception:
                     bmodel.load_state_dict(post_pretrain_state)
                 boptimizer = _make_optimizer_for_model(bmodel, cfg=cfg)
+                # baseline optimizer initial lrs for warmup
+                try:
+                    boptimizer_initial_group_lrs = [g.get('lr', 0.0) for g in boptimizer.param_groups]
+                except Exception:
+                    boptimizer_initial_group_lrs = None
                 bscheduler = _make_scheduler_for_optimizer(boptimizer, cfg=cfg, epochs_per_domain=epochs_per_domain)
 
                 if freeze_router_flag and hasattr(bmodel, "freeze_routing"):
@@ -270,13 +281,29 @@ def main():
 
                 for epoch in range(epochs_per_domain):
                     bmodel.train()
+                    # apply warmup schedule for baseline if requested and this is the first domain
+                    warmup_epochs = cfg.get('warmup_epochs', 0)
+                    warmup_starting_LR = cfg.get('warmup_starting_LR', None)
+                    if domain_id == 0 and warmup_epochs and warmup_starting_LR is not None and boptimizer_initial_group_lrs is not None:
+                        # cosine warmup from starting LR -> original initial LR over warmup_epochs
+                        frac = float(max(0.0, min(1.0, float(epoch) / float(warmup_epochs))))
+                        for gi, g in enumerate(boptimizer.param_groups):
+                            base_lr = float(boptimizer_initial_group_lrs[gi])
+                            # scale starting LR proportionally across groups relative to group 0
+                            try:
+                                start_scale = float(warmup_starting_LR) / float(boptimizer_initial_group_lrs[0]) if boptimizer_initial_group_lrs[0] > 0 else 1.0
+                            except Exception:
+                                start_scale = 1.0
+                            start_lr = base_lr * start_scale
+                            new_lr = base_lr + 0.5 * (start_lr - base_lr) * (1.0 + math.cos(math.pi * frac))
+                            g['lr'] = float(new_lr)
                     for x, y in train_loaders[domain_id]:
                         x, y = x.to(device), y.to(device)
                         boptimizer.zero_grad()
                         logits = bmodel(x)
                         loss_b = criterion(logits, y)
                         if use_router_balancing:
-                            aux_b = compute_aux_loss(bmodel, cfg)
+                            aux_b = compute_aux_loss(bmodel, cfg, epoch=global_epoch)
                             if isinstance(aux_b, torch.Tensor):
                                 loss_b = loss_b + aux_b
                         loss_b.backward()
@@ -315,6 +342,9 @@ def main():
         # recreate scheduler in case the learning groups changed due to routerLR mult or otherwise
         scheduler = _make_scheduler_for_optimizer(optimizer, cfg=cfg, epochs_per_domain=epochs_per_domain)
 
+        # ensure router lr multiplier event at epoch 0 is applied if requested
+        optimizer, router_frozen = _maybe_update_router(cfg, model, optimizer, scheduler, global_epoch, router_frozen)
+
         print("===== Main model stage =====")
         for domain_id in range(num_domains):
             print(f"\n===== Training Domain {domain_id} =====")
@@ -343,6 +373,20 @@ def main():
 
             for epoch in range(epochs_per_domain):
                 model.train()
+                # apply warmup schedule for main training first domain if requested
+                warmup_epochs = cfg.get('warmup_epochs', 0)
+                warmup_starting_LR = cfg.get('warmup_starting_LR', None)
+                if domain_id == 0 and warmup_epochs and warmup_starting_LR is not None and optimizer_initial_group_lrs is not None:
+                    frac = float(max(0.0, min(1.0, float(epoch) / float(warmup_epochs))))
+                    for gi, g in enumerate(optimizer.param_groups):
+                        base_lr = float(optimizer_initial_group_lrs[gi])
+                        try:
+                            start_scale = float(warmup_starting_LR) / float(optimizer_initial_group_lrs[0]) if optimizer_initial_group_lrs[0] > 0 else 1.0
+                        except Exception:
+                            start_scale = 1.0
+                        start_lr = base_lr * start_scale
+                        new_lr = base_lr + 0.5 * (start_lr - base_lr) * (1.0 + math.cos(math.pi * frac))
+                        g['lr'] = float(new_lr)
                 for x, y in train_loader:
                     x, y = x.to(device), y.to(device)
                     optimizer.zero_grad()
@@ -355,7 +399,7 @@ def main():
                             rlogits = model(rx)
                             loss = loss + criterion(rlogits, ry)
 
-                    aux = compute_aux_loss(model, cfg)
+                    aux = compute_aux_loss(model, cfg, epoch=global_epoch)
                     if isinstance(aux, torch.Tensor):
                         loss = loss + aux
                     loss.backward()

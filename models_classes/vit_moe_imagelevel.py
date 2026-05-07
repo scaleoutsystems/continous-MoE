@@ -16,6 +16,99 @@ from typing import Optional, List, Union, Dict
 import torch
 from torch import nn
 import torch.nn.functional as F
+try:
+    import timm
+except Exception:
+    timm = None
+
+
+def _transfer_vit_pretrained_weights_imagelevel(src, dst, moe_layer_indices=None):
+    """Transfer selected weights from a timm ViT into the image-level MoE ViT.
+
+    Focus on patch embedding, cls token, positional embeddings, and MLP -> experts
+    copying so experts are initialized identical to the pretrained FFN.
+    """
+    if moe_layer_indices is None:
+        moe_layer_indices = []
+    # patch embed
+    try:
+        if hasattr(src, 'patch_embed') and hasattr(dst, 'patch_embed'):
+            if hasattr(src.patch_embed, 'proj') and hasattr(dst.patch_embed, 'proj'):
+                with torch.no_grad():
+                    dst.patch_embed.proj.weight.copy_(src.patch_embed.proj.weight)
+                    if getattr(src.patch_embed.proj, 'bias', None) is not None and getattr(dst.patch_embed.proj, 'bias', None) is not None:
+                        dst.patch_embed.proj.bias.copy_(src.patch_embed.proj.bias)
+    except Exception:
+        pass
+
+    # cls token and pos embed
+    try:
+        if hasattr(src, 'cls_token') and getattr(dst, 'cls_token', None) is not None:
+            if dst.cls_token.shape == src.cls_token.shape:
+                with torch.no_grad():
+                    dst.cls_token.copy_(src.cls_token)
+        if hasattr(src, 'pos_embed') and getattr(dst, 'pos_embed', None) is not None:
+            if dst.pos_embed.shape == src.pos_embed.shape:
+                with torch.no_grad():
+                    dst.pos_embed.copy_(src.pos_embed)
+    except Exception:
+        pass
+
+    # per-block copy
+    try:
+        n_blocks = min(len(getattr(src, 'blocks', [])), len(getattr(dst, 'blocks', [])))
+        for i in range(n_blocks):
+            sblk = src.blocks[i]
+            dblk = dst.blocks[i]
+            # copy norms
+            try:
+                if hasattr(sblk, 'norm1') and hasattr(dblk, 'norm1'):
+                    with torch.no_grad():
+                        dblk.norm1.weight.copy_(sblk.norm1.weight)
+                        dblk.norm1.bias.copy_(sblk.norm1.bias)
+            except Exception:
+                pass
+            try:
+                if hasattr(sblk, 'norm2') and hasattr(dblk, 'norm2'):
+                    with torch.no_grad():
+                        dblk.norm2.weight.copy_(sblk.norm2.weight)
+                        dblk.norm2.bias.copy_(sblk.norm2.bias)
+            except Exception:
+                pass
+
+            # copy mlp weights into ImageMoE experts or plain MLP
+            try:
+                if hasattr(sblk, 'mlp') and hasattr(dblk, 'mlp'):
+                    sfc1 = getattr(sblk.mlp, 'fc1', None)
+                    sfc2 = getattr(sblk.mlp, 'fc2', None)
+                    if hasattr(dblk.mlp, 'experts'):
+                        for expert in dblk.mlp.experts:
+                            try:
+                                with torch.no_grad():
+                                    if sfc1 is not None and hasattr(expert, 'fc1'):
+                                        expert.fc1.weight.copy_(sfc1.weight)
+                                        expert.fc1.bias.copy_(sfc1.bias)
+                                    if sfc2 is not None and hasattr(expert, 'fc2'):
+                                        expert.fc2.weight.copy_(sfc2.weight)
+                                        expert.fc2.bias.copy_(sfc2.bias)
+                            except Exception:
+                                pass
+                    else:
+                        try:
+                            with torch.no_grad():
+                                if sfc1 is not None and hasattr(dblk.mlp, 'fc1'):
+                                    dblk.mlp.fc1.weight.copy_(sfc1.weight)
+                                    dblk.mlp.fc1.bias.copy_(sfc1.bias)
+                                if sfc2 is not None and hasattr(dblk.mlp, 'fc2'):
+                                    dblk.mlp.fc2.weight.copy_(sfc2.weight)
+                                    dblk.mlp.fc2.bias.copy_(sfc2.bias)
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+    except Exception:
+        pass
+
 
 
 class PatchEmbed(nn.Module):
@@ -553,6 +646,24 @@ def create_vit_moe_imagelevel(num_classes=10,
                               routing_anneal_epochs: int = 0,
                               patch_size_default: int = 16,
                               **kwargs):
+    # support pretrained ViT variants via config kwargs
+    pretrained_vit = kwargs.get('pretrained_vit', None)
+    pretrained_vit_tiny_path = kwargs.get('pretrained_vit_tiny_path', None)
+    if pretrained_vit in ('small', 'vit_small', 'vit_small_patch16_224'):
+        patch_size = 16
+        img_size = 224
+        depth = 12
+        embed_dim = 384
+        num_heads = 6
+        mlp_ratio = 4.0
+    if pretrained_vit in ('tiny', 'vit_tiny') or pretrained_vit_tiny_path is not None:
+        patch_size = 16
+        img_size = 224
+        depth = 12
+        embed_dim = 192
+        num_heads = 3
+        mlp_ratio = 4.0
+
     moe_params = {
         'num_experts': int(num_experts),
         'route_with_cls_token': False,
@@ -574,6 +685,40 @@ def create_vit_moe_imagelevel(num_classes=10,
     model = ViTImageMoE(img_size=img_size, patch_size=patch_size, num_classes=num_classes,
                         embed_dim=embed_dim, depth=depth, num_heads=num_heads, mlp_ratio=mlp_ratio,
                         moe_layer_indices=moe_layer_indices, moe_params=moe_params, use_class_token=True)
+
+    # If requested, attempt to initialize from pretrained ViT weights
+    try:
+        if pretrained_vit in ('small', 'vit_small', 'vit_small_patch16_224') and timm is not None:
+            try:
+                src = timm.create_model('vit_small_patch16_224', pretrained=True)
+                src.eval()
+                _transfer_vit_pretrained_weights_imagelevel(src, model, moe_layer_indices=moe_layer_indices)
+                model.head = nn.Linear(embed_dim, num_classes)
+            except Exception:
+                pass
+        elif (pretrained_vit in ('tiny', 'vit_tiny')) or (pretrained_vit_tiny_path is not None):
+            if timm is not None:
+                try:
+                    src = timm.create_model('vit_tiny_patch16_224', pretrained=False, num_classes=100,
+                                            embed_dim=192, depth=12, num_heads=3, mlp_ratio=mlp_ratio)
+                    if pretrained_vit_tiny_path is not None:
+                        try:
+                            sd = torch.load(pretrained_vit_tiny_path, map_location='cpu')
+                            if isinstance(sd, dict) and ('state_dict' in sd):
+                                sd = sd['state_dict']
+                            try:
+                                src.load_state_dict(sd, strict=False)
+                            except Exception:
+                                src.load_state_dict(sd)
+                        except Exception:
+                            pass
+                    src.eval()
+                    _transfer_vit_pretrained_weights_imagelevel(src, model, moe_layer_indices=moe_layer_indices)
+                    model.head = nn.Linear(embed_dim, num_classes)
+                except Exception:
+                    pass
+    except Exception:
+        pass
 
     default_params = {
         'embed_dim': embed_dim,

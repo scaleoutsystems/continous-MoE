@@ -95,6 +95,13 @@
     "moe_num_shared_experts": 1,
     "moe_top_k": 1, // only selects between unshared, shared are always used
     "moe_route_with_cls_token": true
+    ,
+    // Optional: initialize from a pretrained ViT. Set to "small" to use
+    // timm's 'vit_small_patch16_224' pretrained weights and transfer them
+    // into the MoE model (FFN weights copied into each expert). Use
+    // `pretrained_vit_tiny_path` to load a local tiny checkpoint.
+    "pretrained_vit": null,
+    "pretrained_vit_tiny_path": null
     // Optional: per-expert learning-rate multipliers for MoE experts.
     // - "moe_unshared_lr_multipliers": scalar or list (length == num_unshared_experts)
     //    Example: [1.0, 0.5, 0.2] will set the three unshared experts to lr*1.0, lr*0.5, lr*0.2
@@ -178,13 +185,26 @@
   // --------------------------------------------------------------------
   // Continual learning options
   "router_balancing": true,
+  // maximum balance strength (starting value). Backwards-compatible with
+  // "router_balance_strength" which is treated as the max if present.
   "router_balance_strength": 0.5,
+  // minimum balance strength at the end of anneal period
+  "router_balance_min": 0.0,
+  // number of epochs over which to cosine-anneal balance strength from max -> min
+  "router_balance_anneal_epochs": 100,
   "router_freeze_after_epochs": 1,
   // set to a value <1 to slow router learning; 0 is equivalent to freezing
   "router_lr_multiplier": 0.0,
   // optionally change the multiplier at a particular epoch (useful for
   // scheduling); null means never change midrun
   "router_lr_multiplier_after_epochs": null,
+
+  // Optional warmup schedule applied only to the first domain's dataloader.
+  // LR is cosine-annealed from `warmup_starting_LR` -> the optimizer group
+  // initial LR over `warmup_epochs` epochs. Provide absolute LR for
+  // `warmup_starting_LR`.
+  "warmup_epochs": 0,
+  "warmup_starting_LR": null,
 
   // --------------------------------------------------------------------
   // Baseline reference (enable to compute FWT/intransience)

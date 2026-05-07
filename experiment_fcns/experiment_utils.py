@@ -1,11 +1,33 @@
 import torch
+import math
 
 
 # auxiliary loss (router balancing, etc.)
-def compute_aux_loss(model, cfg):
+def compute_aux_loss(model, cfg, epoch: int | None = None):
+    """Compute auxiliary router-related losses.
+
+    Supports annealing the router-balance strength between a max and min
+    value using a cosine schedule over a configured number of epochs.
+
+    Args:
+        model: the model instance
+        cfg: full experiment config dict
+        epoch: optional current epoch (used for annealing)
+    """
     loss_aux = 0.0
     if cfg.get("router_balancing", False):
-        strength = cfg.get("router_balance_strength", 0.1)
+        # read max (backwards-compatible fallback to router_balance_strength)
+        max_s = float(cfg.get("router_balance_max", cfg.get("router_balance_strength", 0.1)))
+        min_s = float(cfg.get("router_balance_min", 0.0))
+        anneal_epochs = int(cfg.get("router_balance_anneal_epochs", 0))
+
+        if anneal_epochs > 0 and epoch is not None:
+            frac = float(max(0.0, min(1.0, float(epoch) / float(anneal_epochs))))
+            # cosine anneal from max -> min over anneal_epochs
+            strength = min_s + 0.5 * (max_s - min_s) * (1.0 + math.cos(math.pi * frac))
+        else:
+            strength = max_s
+
         # use helper on model if available
         if hasattr(model, "router_balance_loss"):
             loss_aux = model.router_balance_loss(strength)

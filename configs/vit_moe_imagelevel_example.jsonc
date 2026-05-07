@@ -8,6 +8,11 @@
     "num_heads": 4,
     "mlp_ratio": 1.0,
     "patch_size": 16,
+    // Optionally initialize from a pretrained ViT. Use "small" to fetch
+    // the timm 'vit_small_patch16_224' pretrained model. For a tiny model
+    // provide a local checkpoint path in `pretrained_vit_tiny_path`.
+    "pretrained_vit": null,
+    "pretrained_vit_tiny_path": null,
     "moe_layer_indices": [6,7,8,9],
 
     // MoE-specific options
