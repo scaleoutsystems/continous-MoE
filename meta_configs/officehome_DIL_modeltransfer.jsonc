@@ -1,0 +1,15 @@
+{
+  // Example metaconfig to run the small mini-debug config once
+  // Add additional configs inside the brackets, comma separated
+  "configs": ["configs/officehome-moe-EMArouter-modeltransfer.jsonc", "configs/officehome-moe-modeltransfer.jsonc", "configs/officehome-vit-modeltransfer.jsonc"],
+  // Provide one seed-group (single-run). Use integers or "random".
+//   "global": [42],
+  "dataset": [7, 234234, 8564, 24590, 42],
+  "partition": [32418, 28370, 87347, 884796, 974075],
+  "loader": [649405, 814223, 295418, 788293, 973857],
+  "model": [669288, 123424, 283739, 863059, 437986], 
+  "training": [387589, 46617, 462193, 497546, 722747],
+  "pretrain": [426113, 683415, 949286, 953016, 747725],
+  "baseline": [414318, 810102, 635164, 41262, 458490]
+//   "replay": replay_seed, // not currently supported
+}

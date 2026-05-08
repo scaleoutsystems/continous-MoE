@@ -219,6 +219,7 @@ def main():
                     if isinstance(aux, torch.Tensor):
                         loss = loss + aux
                     loss.backward()
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                     optimizer.step()
                     global_step += 1
                     if replay_buffer is not None:
@@ -307,6 +308,7 @@ def main():
                             if isinstance(aux_b, torch.Tensor):
                                 loss_b = loss_b + aux_b
                         loss_b.backward()
+                        torch.nn.utils.clip_grad_norm_(bmodel.parameters(), max_norm=1.0)
                         boptimizer.step()
                     if bscheduler is not None:
                         bscheduler.step()
@@ -403,6 +405,7 @@ def main():
                     if isinstance(aux, torch.Tensor):
                         loss = loss + aux
                     loss.backward()
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                     optimizer.step()
                     global_step += 1
                     if replay_buffer is not None:
@@ -448,6 +451,13 @@ def main():
         # end of training; save logger
         out = logger.save()
         print("Saved experiment log to:", out)
+
+        # save final model
+        model_timestamp = datetime.now().strftime("%Y%m%d_%H%M")
+        model_type = cfg.get("model", {}).get("name", "unknown")
+        dataset_name = cfg.get("dataset", {})
+        model_name = f"{dataset_name}_{model_type}_{model_timestamp}.pth"
+        torch.save(model.state_dict(), model_name)
 
     except Exception as exc:
         # attempt to save partial log and re-raise after printing
