@@ -79,31 +79,104 @@ def _transfer_vit_pretrained_weights_imagelevel(src, dst, moe_layer_indices=None
             # copy mlp weights into ImageMoE experts or plain MLP
             try:
                 if hasattr(sblk, 'mlp') and hasattr(dblk, 'mlp'):
-                    sfc1 = getattr(sblk.mlp, 'fc1', None)
-                    sfc2 = getattr(sblk.mlp, 'fc2', None)
-                    if hasattr(dblk.mlp, 'experts'):
-                        for expert in dblk.mlp.experts:
+                    sat = getattr(sblk, 'attn', None)
+                    dat = getattr(dblk, 'attn', None)
+                    if sat is not None and dat is not None:
+                        src_qkv_w = None
+                        src_qkv_b = None
+                        if hasattr(sat, 'qkv'):
+                            src_qkv_w = sat.qkv.weight.detach()
+                            src_qkv_b = getattr(sat.qkv, 'bias', None)
+                            if src_qkv_b is not None:
+                                src_qkv_b = src_qkv_b.detach()
+                        elif hasattr(sat, 'q') and hasattr(sat, 'k') and hasattr(sat, 'v'):
+                            try:
+                                src_qkv_w = torch.cat([sat.q.weight.detach(), sat.k.weight.detach(), sat.v.weight.detach()], dim=0)
+                                bq = getattr(sat.q, 'bias', None)
+                                bk = getattr(sat.k, 'bias', None)
+                                bv = getattr(sat.v, 'bias', None)
+                                if bq is not None and bk is not None and bv is not None:
+                                    src_qkv_b = torch.cat([bq.detach(), bk.detach(), bv.detach()], dim=0)
+                            except Exception:
+                                src_qkv_w = None
+                                src_qkv_b = None
+
+                        if src_qkv_w is not None and hasattr(dat, 'in_proj_weight'):
                             try:
                                 with torch.no_grad():
-                                    if sfc1 is not None and hasattr(expert, 'fc1'):
-                                        expert.fc1.weight.copy_(sfc1.weight)
-                                        expert.fc1.bias.copy_(sfc1.bias)
-                                    if sfc2 is not None and hasattr(expert, 'fc2'):
-                                        expert.fc2.weight.copy_(sfc2.weight)
-                                        expert.fc2.bias.copy_(sfc2.bias)
+                                    tgt_w = dat.in_proj_weight
+                                    sw = src_qkv_w.to(device=tgt_w.device, dtype=tgt_w.dtype)
+                                    if sw.shape == tgt_w.shape:
+                                        tgt_w.copy_(sw)
+                                    else:
+                                        try:
+                                            tgt_w.copy_(sw.reshape(tgt_w.shape))
+                                        except Exception:
+                                            pass
+                                    if src_qkv_b is not None and getattr(dat, 'in_proj_bias', None) is not None:
+                                        tb = dat.in_proj_bias
+                                        sb = src_qkv_b.to(device=tb.device, dtype=tb.dtype)
+                                        if sb.shape == tb.shape:
+                                            tb.copy_(sb)
                             except Exception:
                                 pass
-                    else:
+
                         try:
-                            with torch.no_grad():
-                                if sfc1 is not None and hasattr(dblk.mlp, 'fc1'):
-                                    dblk.mlp.fc1.weight.copy_(sfc1.weight)
-                                    dblk.mlp.fc1.bias.copy_(sfc1.bias)
-                                if sfc2 is not None and hasattr(dblk.mlp, 'fc2'):
-                                    dblk.mlp.fc2.weight.copy_(sfc2.weight)
-                                    dblk.mlp.fc2.bias.copy_(sfc2.bias)
+                            src_out_w = None
+                            src_out_b = None
+                            if hasattr(sat, 'proj'):
+                                src_out_w = sat.proj.weight.detach()
+                                src_out_b = getattr(sat.proj, 'bias', None)
+                                if src_out_b is not None:
+                                    src_out_b = src_out_b.detach()
+                            if src_out_w is not None:
+                                if hasattr(dat, 'out_proj'):
+                                    with torch.no_grad():
+                                        ow = dat.out_proj.weight
+                                        srcw = src_out_w.to(device=ow.device, dtype=ow.dtype)
+                                        if srcw.shape == ow.shape:
+                                            ow.copy_(srcw)
+                                        if src_out_b is not None and getattr(dat.out_proj, 'bias', None) is not None:
+                                            dat.out_proj.bias.copy_(src_out_b.to(device=dat.out_proj.bias.device, dtype=dat.out_proj.bias.dtype))
+                                elif hasattr(dat, 'proj'):
+                                    try:
+                                        with torch.no_grad():
+                                            dat.proj.weight.copy_(src_out_w)
+                                            if src_out_b is not None and getattr(dat.proj, 'bias', None) is not None:
+                                                dat.proj.bias.copy_(src_out_b)
+                                    except Exception:
+                                        pass
                         except Exception:
                             pass
+
+                # copy MLP -> if dst uses MoE, replicate into experts; otherwise copy into MLP
+                try:
+                    if hasattr(sblk, 'mlp') and hasattr(dblk, 'mlp'):
+                        sfc1 = getattr(sblk.mlp, 'fc1', None)
+                        sfc2 = getattr(sblk.mlp, 'fc2', None)
+                        if hasattr(dblk.mlp, 'experts'):
+                            for expert in dblk.mlp.experts:
+                                try:
+                                    with torch.no_grad():
+                                        if sfc1 is not None and hasattr(expert, 'fc1'):
+                                            expert.fc1.weight.copy_(sfc1.weight)
+                                            expert.fc1.bias.copy_(sfc1.bias)
+                                        if sfc2 is not None and hasattr(expert, 'fc2'):
+                                            expert.fc2.weight.copy_(sfc2.weight)
+                                            expert.fc2.bias.copy_(sfc2.bias)
+                                except Exception:
+                                    pass
+                        else:
+                            try:
+                                with torch.no_grad():
+                                    if sfc1 is not None and hasattr(dblk.mlp, 'fc1'):
+                                        dblk.mlp.fc1.weight.copy_(sfc1.weight)
+                                        dblk.mlp.fc1.bias.copy_(sfc1.bias)
+                                    if sfc2 is not None and hasattr(dblk.mlp, 'fc2'):
+                                        dblk.mlp.fc2.weight.copy_(sfc2.weight)
+                                        dblk.mlp.fc2.bias.copy_(sfc2.bias)
+                            except Exception:
+                                pass
             except Exception:
                 pass
     except Exception:

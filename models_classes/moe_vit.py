@@ -86,25 +86,84 @@ def _transfer_vit_pretrained_weights(src, dst, moe_layer_indices=None):
             except Exception:
                 pass
 
-            # copy attention qkv / out proj when possible
+            # copy attention qkv / out proj when possible (handle qkv or q,k,v forms)
             try:
                 sat = getattr(sblk, 'attn', None)
                 dat = getattr(dblk, 'attn', None)
                 if sat is not None and dat is not None:
-                    # timm: attn.qkv (Linear) and attn.proj (Linear)
-                    if hasattr(sat, 'qkv') and hasattr(dat, 'in_proj_weight'):
-                        with torch.no_grad():
-                            dat.in_proj_weight.copy_(sat.qkv.weight)
-                            if getattr(sat.qkv, 'bias', None) is not None and getattr(dat, 'in_proj_bias', None) is not None:
-                                dat.in_proj_bias.copy_(sat.qkv.bias)
-                    if hasattr(sat, 'proj') and hasattr(dat, 'out_proj'):
+                    # attempt to obtain stacked qkv weights from source
+                    src_qkv_w = None
+                    src_qkv_b = None
+                    # case: combined qkv linear (timm Attention)
+                    if hasattr(sat, 'qkv'):
+                        src_qkv_w = sat.qkv.weight.detach()
+                        src_qkv_b = getattr(sat.qkv, 'bias', None)
+                        if src_qkv_b is not None:
+                            src_qkv_b = src_qkv_b.detach()
+                    # case: separate q, k, v linears
+                    elif hasattr(sat, 'q') and hasattr(sat, 'k') and hasattr(sat, 'v'):
+                        try:
+                            src_qkv_w = torch.cat([sat.q.weight.detach(), sat.k.weight.detach(), sat.v.weight.detach()], dim=0)
+                            bq = getattr(sat.q, 'bias', None)
+                            bk = getattr(sat.k, 'bias', None)
+                            bv = getattr(sat.v, 'bias', None)
+                            if bq is not None and bk is not None and bv is not None:
+                                src_qkv_b = torch.cat([bq.detach(), bk.detach(), bv.detach()], dim=0)
+                        except Exception:
+                            src_qkv_w = None
+                            src_qkv_b = None
+
+                    # destination is PyTorch MultiheadAttention (in_proj_weight / in_proj_bias)
+                    if src_qkv_w is not None and hasattr(dat, 'in_proj_weight'):
                         try:
                             with torch.no_grad():
-                                dat.out_proj.weight.copy_(sat.proj.weight)
-                                if getattr(sat.proj, 'bias', None) is not None:
-                                    dat.out_proj.bias.copy_(sat.proj.bias)
+                                # cast to destination dtype/device
+                                tgt_w = dat.in_proj_weight
+                                sw = src_qkv_w.to(device=tgt_w.device, dtype=tgt_w.dtype)
+                                if sw.shape == tgt_w.shape:
+                                    tgt_w.copy_(sw)
+                                else:
+                                    # attempt transpose or reshape if needed
+                                    try:
+                                        tgt_w.copy_(sw.reshape(tgt_w.shape))
+                                    except Exception:
+                                        pass
+                                if src_qkv_b is not None and getattr(dat, 'in_proj_bias', None) is not None:
+                                    tb = dat.in_proj_bias
+                                    sb = src_qkv_b.to(device=tb.device, dtype=tb.dtype)
+                                    if sb.shape == tb.shape:
+                                        tb.copy_(sb)
                         except Exception:
                             pass
+
+                    # copy output projection
+                    try:
+                        src_out_w = None
+                        src_out_b = None
+                        if hasattr(sat, 'proj'):
+                            src_out_w = sat.proj.weight.detach()
+                            src_out_b = getattr(sat.proj, 'bias', None)
+                            if src_out_b is not None:
+                                src_out_b = src_out_b.detach()
+                        if src_out_w is not None:
+                            if hasattr(dat, 'out_proj'):
+                                with torch.no_grad():
+                                    ow = dat.out_proj.weight
+                                    srcw = src_out_w.to(device=ow.device, dtype=ow.dtype)
+                                    if srcw.shape == ow.shape:
+                                        ow.copy_(srcw)
+                                    if src_out_b is not None and getattr(dat.out_proj, 'bias', None) is not None:
+                                        dat.out_proj.bias.copy_(src_out_b.to(device=dat.out_proj.bias.device, dtype=dat.out_proj.bias.dtype))
+                            elif hasattr(dat, 'proj'):
+                                try:
+                                    with torch.no_grad():
+                                        dat.proj.weight.copy_(src_out_w)
+                                        if src_out_b is not None and getattr(dat.proj, 'bias', None) is not None:
+                                            dat.proj.bias.copy_(src_out_b)
+                                except Exception:
+                                    pass
+                    except Exception:
+                        pass
             except Exception:
                 pass
 

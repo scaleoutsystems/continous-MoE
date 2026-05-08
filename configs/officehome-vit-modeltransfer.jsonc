@@ -96,7 +96,7 @@
   // Loss and learning rate
   "loss": {
     "name": "weighted_cross_entropy", // options: "cross_entropy", "weighted_cross_entropy", "focal"
-    "lr": 0.00001,
+    "lr": 0.0001,
     // set to true to enable per-class weighting based on partition distribution
     "weighted": true,
     // upper limit applied when computing inverse-frequency weights
@@ -156,7 +156,7 @@
   // scheduling); null means never change midrun
   "router_lr_multiplier_after_epochs": null,
   "warmup_epochs":2,
-  "warmup_starting_LR": 0.0000001,
+  "warmup_starting_LR": 0.00001,
 
   // --------------------------------------------------------------------
   // Baseline reference (enable to compute FWT/intransience)

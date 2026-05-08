@@ -91,7 +91,7 @@
     // routing temperature annealing (initial temperature and anneal epochs)
     "routing_temp": 1.0, // initial temperature
     "routing_anneal_epochs": 2, // number of epochs to anneal over - if 0 then argmax
-    "moe_expert_lr_multiplier": 10.0,
+    "moe_expert_lr_multiplier": 3.0,
     "route_with_cls_token": false,
     "moe_route_with_cls_token": false
     // "routing_sample": true, // sample routing instead of argmax
@@ -101,7 +101,7 @@
   // Loss and learning rate
   "loss": {
     "name": "weighted_cross_entropy", // options: "cross_entropy", "weighted_cross_entropy", "focal"
-    "lr": 0.00001,
+    "lr": 0.0001,
     // set to true to enable per-class weighting based on partition distribution
     "weighted": true,
     // upper limit applied when computing inverse-frequency weights
@@ -161,7 +161,7 @@
   // scheduling); null means never change midrun
   "router_lr_multiplier_after_epochs": 0,
   "warmup_epochs":2,
-  "warmup_starting_LR": 0.0000001,
+  "warmup_starting_LR": 0.00001,
 
   // --------------------------------------------------------------------
   // Baseline reference (enable to compute FWT/intransience)
