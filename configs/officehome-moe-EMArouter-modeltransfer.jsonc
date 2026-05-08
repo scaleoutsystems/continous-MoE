@@ -68,10 +68,10 @@
     "name": "vit_moe_imagelevel",
     "num_classes": 65,
     "pretrained": false,
-    "pretrained_vit": true,
+    "pretrained_vit": "small",
     "pretrained_vit_tiny_path": null,
     "patch_size": 16,
-    "moe_layer_indices": [6,7,8,9],
+    "moe_layer_indices": [8,9,10,11],
     "num_experts": 4,
     "embed_dim": 384, 
     "depth": 12, 
@@ -93,9 +93,9 @@
     "routing_anneal_epochs": 2, // number of epochs to anneal over - if 0 then argmax
     "moe_expert_lr_multiplier": 3.0,
     "route_with_cls_token": false,
-    "moe_route_with_cls_token": false
-    // "routing_sample": true, // sample routing instead of argmax
-    // "argmax_routing_start_epoch": 2 // start argmax instead of sampling at this epoch
+    "moe_route_with_cls_token": false,
+    "routing_sample": true, // sample routing instead of argmax
+    "argmax_routing_start_epoch": 3 // start argmax instead of sampling at this epoch
   },
   // --------------------------------------------------------------------
   // Loss and learning rate

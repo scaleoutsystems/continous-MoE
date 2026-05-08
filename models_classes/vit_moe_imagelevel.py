@@ -177,6 +177,8 @@ def _transfer_vit_pretrained_weights_imagelevel(src, dst, moe_layer_indices=None
                                         dblk.mlp.fc2.bias.copy_(sfc2.bias)
                             except Exception:
                                 pass
+                except Exception:
+                    pass
             except Exception:
                 pass
     except Exception:
@@ -593,7 +595,14 @@ class ViTImageMoE(nn.Module):
             self.cls_token = nn.Parameter(torch.zeros(1, 1, embed_dim))
         else:
             self.register_parameter('cls_token', None)
-        self.pos_embed = None
+
+        assert self.patch_embed.num_patches is not None
+        seq_len = self.patch_embed.num_patches + (1 if use_class_token else 0)
+
+        self.pos_embed = nn.Parameter(
+            torch.zeros(1, seq_len, embed_dim)
+        )
+        nn.init.trunc_normal_(self.pos_embed, std=0.02)
         self.pos_drop = nn.Dropout(p=0.0)
 
         if moe_layer_indices is None:
@@ -767,6 +776,9 @@ def create_vit_moe_imagelevel(num_classes=10,
                 src.eval()
                 _transfer_vit_pretrained_weights_imagelevel(src, model, moe_layer_indices=moe_layer_indices)
                 model.head = nn.Linear(embed_dim, num_classes)
+                nn.init.trunc_normal_(model.head.weight, std=0.02)
+                nn.init.zeros_(model.head.bias)
+                
             except Exception:
                 pass
         elif (pretrained_vit in ('tiny', 'vit_tiny')) or (pretrained_vit_tiny_path is not None):
@@ -788,6 +800,8 @@ def create_vit_moe_imagelevel(num_classes=10,
                     src.eval()
                     _transfer_vit_pretrained_weights_imagelevel(src, model, moe_layer_indices=moe_layer_indices)
                     model.head = nn.Linear(embed_dim, num_classes)
+                    nn.init.trunc_normal_(model.head.weight, std=0.02)
+                    nn.init.zeros_(model.head.bias)
                 except Exception:
                     pass
     except Exception:

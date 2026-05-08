@@ -572,8 +572,18 @@ class ViTMoE(nn.Module):
             self.cls_token = nn.Parameter(torch.zeros(1, 1, embed_dim))
         else:
             self.register_parameter('cls_token', None)
-        self.pos_embed = None  # will be created in _init_pos_embed
-        self.pos_drop = nn.Dropout(p=0.0)
+        if img_size is not None:
+            assert self.patch_embed.num_patches is not None
+            seq_len = self.patch_embed.num_patches + (
+                1 if use_class_token else 0
+            )
+
+            self.pos_embed = nn.Parameter(torch.zeros(1, seq_len, embed_dim))
+            nn.init.trunc_normal_(self.pos_embed, std=0.02)
+        else:
+            # lazily initialized on first forward pass
+            self.pos_embed = None
+            self.pos_drop = nn.Dropout(p=0.0)
 
         # determine which layers are MoE
         if moe_layer_indices is None:
@@ -584,7 +594,7 @@ class ViTMoE(nn.Module):
             elif moe_layer_indices == 'all':
                 moe_layer_indices = list(range(depth))
             elif moe_layer_indices == 'back_half_every_other':
-                moe_layer_indices = [i for i in range(depth) if ((i < depth // 2) and (i % 2) == 1)]
+                moe_layer_indices = [i for i in range(depth) if ((i >= depth // 2) and (i % 2) == 1)]
             else:
                 moe_layer_indices = []
 
@@ -640,8 +650,11 @@ class ViTMoE(nn.Module):
             x = blk(x)
         x = self.norm(x)
         # use first token as classification embedding
-        cls = x[:, 0]
-        out = self.head(cls)
+        if self.use_class_token:
+            cls = x[:, 0]
+        else:
+            cls = x.mean(dim=1)
+            out = self.head(cls)
         return out
 
     # router helpers ---------------------------------------------------------
@@ -793,6 +806,8 @@ def create_moe_vit(num_classes=10,
                 _transfer_vit_pretrained_weights(src, model, moe_layer_indices=moe_layer_indices)
                 # replace classifier head with fresh-initialized head for target num_classes
                 model.head = nn.Linear(embed_dim, num_classes)
+                nn.init.trunc_normal_(model.head.weight, std=0.02)
+                nn.init.zeros_(model.head.bias)
             except Exception:
                 pass
         elif (pretrained_vit in ('tiny', 'vit_tiny')) or (pretrained_vit_tiny_path is not None):
@@ -816,6 +831,8 @@ def create_moe_vit(num_classes=10,
                     src.eval()
                     _transfer_vit_pretrained_weights(src, model, moe_layer_indices=moe_layer_indices)
                     model.head = nn.Linear(embed_dim, num_classes)
+                    nn.init.trunc_normal_(model.head.weight, std=0.02)
+                    nn.init.zeros_(model.head.bias)
                 except Exception:
                     pass
     except Exception:
