@@ -314,25 +314,32 @@ class MoE(nn.Module):
 
         # experts list: unshared experts come first, then shared experts
         total = self.num_experts
-        self.experts = nn.ModuleList([
-            MLP(dim, hidden_dim, out_dim=dim, dropout=dropout)
-            for _ in range(total)
-        ])
+        self.experts = nn.ModuleList([MLP(dim, hidden_dim, out_dim=dim, dropout=dropout) for _ in range(total)])
 
-        # gating (router) - only over unshared experts
-        self.gate = nn.Linear(dim, num_unshared_experts)
+        # gating (router) - only over unshared experts. Create gate only when there
+        # is at least one unshared expert; this avoids invalid zero-output linear
+        # layers when configs specify shared-only experts.
+        if self.num_unshared_experts > 0:
+            self.gate = nn.Linear(dim, self.num_unshared_experts)
+        else:
+            self.gate = None
 
         # per-forward debug stats (kept detached) only for unshared experts
-        self.register_buffer('last_importance', torch.zeros(num_unshared_experts), persistent=False)
-        self.register_buffer('last_load', torch.zeros(num_unshared_experts), persistent=False)
+        if self.num_unshared_experts > 0:
+            self.register_buffer('last_importance', torch.zeros(self.num_unshared_experts), persistent=False)
+            self.register_buffer('last_load', torch.zeros(self.num_unshared_experts), persistent=False)
+        else:
+            # keep plain attributes for compatibility
+            self.last_importance = torch.zeros(0)
+            self.last_load = torch.zeros(0)
 
         # cumulative stats used for utilization metrics (on CPU)
         # cumulative_gate_sum: sum of gate probabilities over tokens for each unshared expert
-        self.cumulative_gate_sum = torch.zeros(num_unshared_experts)
+        self.cumulative_gate_sum = torch.zeros(self.num_unshared_experts)
         # cumulative_selected_counts: number of tokens that selected each expert (top-k selection)
-        self.cumulative_selected_counts = torch.zeros(num_unshared_experts)
+        self.cumulative_selected_counts = torch.zeros(self.num_unshared_experts)
         # epoch-local selected counts (reset by logger via get_and_reset_usage_counts)
-        self.register_buffer('_epoch_selected_counts', torch.zeros(num_unshared_experts, dtype=torch.long))
+        self.register_buffer('_epoch_selected_counts', torch.zeros(self.num_unshared_experts, dtype=torch.long))
         # cumulative_samples counts tokens processed (B * num_tokens)
         self.cumulative_samples = 0
 
@@ -340,7 +347,9 @@ class MoE(nn.Module):
         self._last_gate_probs = None
 
     def get_router_parameters(self):
-        return self.gate.parameters()
+        if self.gate is None:
+            return []
+        return list(self.gate.parameters())
 
     def get_expert_parameters(self):
         """Return a list of tuples (expert_index, params_list, is_shared).
@@ -583,7 +592,9 @@ class ViTMoE(nn.Module):
         else:
             # lazily initialized on first forward pass
             self.pos_embed = None
-            self.pos_drop = nn.Dropout(p=0.0)
+
+        # positional dropout (always present)
+        self.pos_drop = nn.Dropout(p=0.0)
 
         # determine which layers are MoE
         if moe_layer_indices is None:
@@ -761,6 +772,9 @@ def create_moe_vit(num_classes=10,
     ``moe_top_k`` and ``moe_route_with_cls_token``.
     """
     # support pretrained ViT variants requested via config kwargs
+    # interpret explicit None (e.g. JSON null in config) as the factory default
+    if moe_layer_indices is None:
+        moe_layer_indices = [1] # should not matter
     pretrained_vit = kwargs.get('pretrained_vit', None)
     pretrained_vit_tiny_path = kwargs.get('pretrained_vit_tiny_path', None)
     # If requesting a pretrained ViT-Small, override architectural params
