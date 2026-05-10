@@ -661,11 +661,8 @@ class ViTMoE(nn.Module):
             x = blk(x)
         x = self.norm(x)
         # use first token as classification embedding
-        if self.use_class_token:
-            cls = x[:, 0]
-        else:
-            cls = x.mean(dim=1)
-            out = self.head(cls)
+        cls = x[:, 0] if self.use_class_token else x.mean(dim=1)
+        out = self.head(cls)
         return out
 
     # router helpers ---------------------------------------------------------

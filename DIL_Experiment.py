@@ -268,17 +268,19 @@ def main():
                 except Exception:
                     bmodel.load_state_dict(post_pretrain_state)
                 boptimizer = _make_optimizer_for_model(bmodel, cfg=cfg)
-                # baseline optimizer initial lrs for warmup
-                try:
-                    boptimizer_initial_group_lrs = [g.get('lr', 0.0) for g in boptimizer.param_groups]
-                except Exception:
-                    boptimizer_initial_group_lrs = None
                 bscheduler = _make_scheduler_for_optimizer(boptimizer, cfg=cfg, epochs_per_domain=epochs_per_domain)
 
                 if freeze_router_flag and hasattr(bmodel, "freeze_routing"):
                     bmodel.freeze_routing(True)
                 if multiplier_defined and hasattr(bmodel, "adjust_router_learning_rate"):
                     boptimizer = bmodel.adjust_router_learning_rate(boptimizer, cfg.get("router_lr_multiplier", 1.0))
+
+                # baseline optimizer initial lrs for warmup: capture AFTER any router-driven
+                # optimizer modifications (e.g. moving router params to a separate group).
+                try:
+                    boptimizer_initial_group_lrs = [g.get('lr', 0.0) for g in boptimizer.param_groups]
+                except Exception:
+                    boptimizer_initial_group_lrs = None
 
                 for epoch in range(epochs_per_domain):
                     bmodel.train()
@@ -346,6 +348,13 @@ def main():
 
         # ensure router lr multiplier event at epoch 0 is applied if requested
         optimizer, router_frozen = _maybe_update_router(cfg, model, optimizer, scheduler, global_epoch, router_frozen)
+
+        # capture optimizer initial group learning rates AFTER any router-driven
+        # optimizer modifications so warmup indexing matches param_groups
+        try:
+            optimizer_initial_group_lrs = [g.get('lr', 0.0) for g in optimizer.param_groups]
+        except Exception:
+            optimizer_initial_group_lrs = None
 
         print("===== Main model stage =====")
         for domain_id in range(num_domains):
