@@ -291,10 +291,13 @@ def main():
                         # cosine warmup from starting LR -> original initial LR over warmup_epochs
                         frac = float(max(0.0, min(1.0, float(epoch) / float(warmup_epochs))))
                         for gi, g in enumerate(boptimizer.param_groups):
-                            base_lr = float(boptimizer_initial_group_lrs[gi])
+                            try:
+                                base_lr = float(boptimizer_initial_group_lrs[gi])
+                            except Exception:
+                                base_lr = float(g.get('lr', 0.0))
                             # scale starting LR proportionally across groups relative to group 0
                             try:
-                                start_scale = float(warmup_starting_LR) / float(boptimizer_initial_group_lrs[0]) if boptimizer_initial_group_lrs[0] > 0 else 1.0
+                                start_scale = float(warmup_starting_LR) / float(boptimizer_initial_group_lrs[0]) if (boptimizer_initial_group_lrs and boptimizer_initial_group_lrs[0] > 0) else 1.0
                             except Exception:
                                 start_scale = 1.0
                             start_lr = base_lr * start_scale
@@ -390,9 +393,12 @@ def main():
                 if domain_id == 0 and warmup_epochs and warmup_starting_LR is not None and optimizer_initial_group_lrs is not None:
                     frac = float(max(0.0, min(1.0, float(epoch) / float(warmup_epochs))))
                     for gi, g in enumerate(optimizer.param_groups):
-                        base_lr = float(optimizer_initial_group_lrs[gi])
                         try:
-                            start_scale = float(warmup_starting_LR) / float(optimizer_initial_group_lrs[0]) if optimizer_initial_group_lrs[0] > 0 else 1.0
+                            base_lr = float(optimizer_initial_group_lrs[gi])
+                        except Exception:
+                            base_lr = float(g.get('lr', 0.0))
+                        try:
+                            start_scale = float(warmup_starting_LR) / float(optimizer_initial_group_lrs[0]) if (optimizer_initial_group_lrs and optimizer_initial_group_lrs[0] > 0) else 1.0
                         except Exception:
                             start_scale = 1.0
                         start_lr = base_lr * start_scale
