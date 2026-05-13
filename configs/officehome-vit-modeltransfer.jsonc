@@ -156,7 +156,7 @@
   // scheduling); null means never change midrun
   "router_lr_multiplier_after_epochs": null,
   "warmup_epochs":2,
-  "warmup_starting_LR": 0.00001,
+  "warmup_starting_LR": 0.0001,
 
   // --------------------------------------------------------------------
   // Baseline reference (enable to compute FWT/intransience)
