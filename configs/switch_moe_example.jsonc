@@ -1,0 +1,18 @@
+{
+  // Example config for the deterministic Switch-style MoE ViT
+  "dataset": "cifar10",
+  "dataset_root": "./datasets",
+
+  "model": {
+    "name": "vit_switch_moe",
+    "num_classes": 10,
+    "pretrained": false,
+    "num_experts": 4,
+    "ema_alpha": 0.9,
+    // optional: list mapping expert indices -> domain indices for prototype init
+    "prototype_init_domains": null
+  },
+
+  "loss": { "name": "cross_entropy", "lr": 1e-3 },
+  "epochs_per_domain": 1
+}

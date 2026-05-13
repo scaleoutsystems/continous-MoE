@@ -158,6 +158,19 @@ def load_config(path: str) -> Dict[str, Any]:
     model = create_model(cfg)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = model.to(device)
+    # Optional: allow model factories to initialize routing prototypes from
+    # the dataloaders if they expose a helper and the config requests it.
+    try:
+        model_cfg = cfg.get('model', {})
+        proto_init = model_cfg.get('prototype_init_domains', None)
+        if proto_init is not None and hasattr(model, 'initialize_prototypes_from_loaders'):
+            try:
+                model.initialize_prototypes_from_loaders(train_loaders, device, domain_to_expert_map=proto_init)
+            except Exception:
+                # non-fatal; proceed with uninitialized prototypes
+                pass
+    except Exception:
+        pass
 
     # optimizer
     opt_cfg = cfg.get("optimizer", {"name": "adam"})

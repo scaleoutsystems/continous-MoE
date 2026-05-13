@@ -15,6 +15,10 @@ try:
     from models_classes.vit_moe_imagelevel import create_vit_moe_imagelevel
 except ImportError:
     create_vit_moe_imagelevel = None
+try:
+    from models_classes.switch_moe_vit import create_switch_moe
+except ImportError:
+    create_switch_moe = None
 
 
 def create_model(config: Dict):
@@ -100,6 +104,13 @@ def create_model(config: Dict):
         p = mcfg.copy()
         p.pop("name", None)
         return create_vit_moe_imagelevel(**p)["model"]
+
+    elif name in ("vit_switch_moe", "switch_moe", "vit_switch"):
+        if create_switch_moe is None:
+            raise ImportError("Switch MoE ViT factory not found; ensure models_classes is on PYTHONPATH")
+        p = mcfg.copy()
+        p.pop("name", None)
+        return create_switch_moe(**p)["model"]
 
     elif name in ("pretrained_vit_moe_head", "pretrained_vit_proto_moe", "vit_moe_proto"):
         if create_pretrained_vit_moe_head is None:
