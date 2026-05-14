@@ -5,12 +5,14 @@
 
   "model": {
     "name": "vit_switch_moe",
-    "num_classes": 10,
-    "pretrained": false,
+    "num_classes": 65,
+    "pretrained_vit": "small",
     "num_experts": 4,
-    "ema_alpha": 0.9,
+    "ema_alpha": 0.95,
     // optional: list mapping expert indices -> domain indices for prototype init
-    "prototype_init_domains": null
+    "prototype_init_domains": [0, 1, 2, 3],
+    "route_with_class_token": false,
+    "upper_blocks": 4
   },
 
   "loss": { "name": "cross_entropy", "lr": 1e-3 },
