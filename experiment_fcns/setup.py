@@ -158,16 +158,24 @@ def load_config(path: str) -> Dict[str, Any]:
     model = create_model(cfg)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = model.to(device)
-    # Optional: allow model factories to initialize routing prototypes from
-    # the dataloaders if they expose a helper and the config requests it.
+    # Optional: initialize routing prototypes from file or dataset if requested
     try:
         model_cfg = cfg.get('model', {})
-        proto_init = model_cfg.get('prototype_init_domains', None)
-        if proto_init is not None and hasattr(model, 'initialize_prototypes_from_loaders'):
+        # priority: explicit file -> dataset folder -> loaders helper
+        proto_file = model_cfg.get('prototype_init_file', None)
+        proto_dataset = model_cfg.get('prototype_init_dataset', None)
+        proto_layer = int(model_cfg.get('prototype_init_layer', 7))
+        proto_map = model_cfg.get('prototype_init_domains', None)
+
+        if proto_file is not None and hasattr(model, 'initialize_prototypes_from_file'):
             try:
-                model.initialize_prototypes_from_loaders(train_loaders, device, domain_to_expert_map=proto_init)
+                model.initialize_prototypes_from_file(proto_file, device=device, domain_to_expert_map=proto_map)
             except Exception:
-                # non-fatal; proceed with uninitialized prototypes
+                pass
+        elif proto_dataset is not None and hasattr(model, 'initialize_prototypes_from_dataset'):
+            try:
+                model.initialize_prototypes_from_dataset(proto_dataset, layer_index=proto_layer, device=device)
+            except Exception:
                 pass
     except Exception:
         pass

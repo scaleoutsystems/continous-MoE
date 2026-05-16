@@ -11,6 +11,7 @@
     "ema_alpha": 0.95,
     // optional: list mapping expert indices -> domain indices for prototype init
     "prototype_init_domains": [0, 1, 2, 3],
+    "prototype_init_dataset": "datasets/OfficeHomeDataset_10072016",
     "route_with_class_token": false,
     "upper_blocks": 4
   },

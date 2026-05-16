@@ -87,7 +87,7 @@
     // explicitly
     
     "moe_top_k": 0, // only selects between unshared, shared are always used
-    "moe_expert_lr_multiplier": 10.0,
+    "moe_expert_lr_multiplier": 3.0,
     "route_with_cls_token": true,
     "moe_route_with_cls_token": true
   },
