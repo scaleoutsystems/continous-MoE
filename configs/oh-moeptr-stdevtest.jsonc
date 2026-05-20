@@ -72,7 +72,7 @@
     // optional: list mapping expert indices -> domain indices for prototype init
     "prototype_init_domains": [0, 1, 2, 3],
     "prototype_init_dataset": "datasets/OfficeHomeDataset_10072016",
-    "routing_alpha": 0.3,
+    "routing_alpha": 0.9,
     "route_with_class_token": false,
     "upper_blocks": 4
   },
@@ -128,7 +128,7 @@
     "end_factor": 1.0
   },
 
-  "epochs_per_domain": 20,
+  "epochs_per_domain": 1,
 
   // --------------------------------------------------------------------
   // Continual learning options

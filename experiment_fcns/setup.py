@@ -171,12 +171,12 @@ def load_config(path: str) -> Dict[str, Any]:
             try:
                 model.initialize_prototypes_from_file(proto_file, device=device, domain_to_expert_map=proto_map)
             except Exception:
-                pass
+                raise
         elif proto_dataset is not None and hasattr(model, 'initialize_prototypes_from_dataset'):
             try:
                 model.initialize_prototypes_from_dataset(proto_dataset, layer_index=proto_layer, device=device)
             except Exception:
-                pass
+                raise
     except Exception:
         pass
 
