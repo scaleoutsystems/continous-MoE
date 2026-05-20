@@ -11,6 +11,7 @@ def plot_results(log_dir):
     from pathlib import Path
     import torch
     import numpy as np
+    from matplotlib.ticker import MultipleLocator
     from sklearn.metrics import ConfusionMatrixDisplay
 
     log_dir = Path(log_dir)
@@ -35,43 +36,55 @@ def plot_results(log_dir):
             boundaries.append(i)
 
     # -----------------------
-    # Accuracy plot
+    # Accuracy plot (percent y-axis with horizontal markers)
     # -----------------------
     plt.figure(figsize=(10, 6))
+    x = np.arange(len(hist))
 
-    plt.plot(epochs,
-             [h["overall_acc"] for h in hist],
-             label="Overall Accuracy")
+    overall = np.array([h.get("overall_acc", np.nan) for h in hist], dtype=float) * 100.0
+    avg_inc = np.array([h.get("avg_inc_acc", np.nan) for h in hist], dtype=float) * 100.0
 
-    plt.plot(epochs,
-             [h["avg_inc_acc"] for h in hist],
-             label="Avg Incremental Acc")
+    plt.plot(x, overall, label="Overall Accuracy")
+    plt.plot(x, avg_inc, label="Avg Incremental Acc")
 
-    for d in range(max(h["domain"] for h in hist) + 1):
+    # per-domain curves (as percent)
+    max_domain = max(h.get("domain", 0) for h in hist)
+    for d in range(max_domain + 1):
         domain_curve = []
         for h in hist:
-            if d < len(h["domain_acc_vector"]):
-                domain_curve.append(h["domain_acc_vector"][d])
+            dav = h.get("domain_acc_vector", None)
+            if dav is not None and d < len(dav):
+                v = dav[d]
+                domain_curve.append(np.nan if v is None else float(v) * 100.0)
             else:
                 domain_curve.append(float('nan'))
-        plt.plot(epochs, domain_curve,
-                 linestyle="--", alpha=0.5,
-                 label=f"Domain {d}")
+        plt.plot(x, domain_curve, linestyle="--", alpha=0.5, label=f"Domain {d}")
 
+    ax = plt.gca()
+    ax.set_title("Accuracy Metrics")
+    ax.set_xlabel("Epoch")
+    ax.set_ylabel("Accuracy (%)")
+    # horizontal percent markers and grid
+    try:
+        ax.set_yticks(np.linspace(0, 100, 5))
+    except Exception:
+        pass
+    ax.grid(which='major', axis='y', linestyle='--', alpha=0.5)
+    # vertical epoch markers (reasonable spacing)
+    n_epochs = len(hist)
+    step = max(1, int(max(1, n_epochs) / 10))
+    ax.xaxis.set_major_locator(MultipleLocator(step))
+    ax.grid(which='major', axis='x', linestyle='--', alpha=0.25)
+    # domain boundary vertical dotted lines
     for b in boundaries:
-        plt.axvline(b, color="black", linestyle=":")
-
-    plt.legend()
-    plt.title("Accuracy Metrics")
-    plt.xlabel("Epoch")
-    plt.ylabel("Accuracy")
+        ax.axvline(b, color='black', linestyle=':', alpha=0.9)
+    ax.legend()
     plt.show()
 
     # -----------------------
-    # Continual metrics plot
+    # Continual metrics plot (unitless)
     # -----------------------
     plt.figure(figsize=(10, 6))
-
     for key in [
         "plasticity",
         "forgetting",
@@ -83,14 +96,21 @@ def plot_results(log_dir):
         values = [h.get(key, None) for h in hist]
         values = [np.nan if v is None else v for v in values]
         if not all(np.isnan(values)):
-            plt.plot(list(epochs), values, label=key)
+            plt.plot(x, values, label=key)
 
+    ax = plt.gca()
+    ax.set_title("Continual Learning Metrics")
+    ax.set_xlabel("Epoch")
+    ax.set_ylabel("Value (unitless)")
+    ax.grid(which='major', axis='y', linestyle='--', alpha=0.5)
+    # vertical epoch markers
+    step = max(1, int(max(1, len(hist)) / 10))
+    ax.xaxis.set_major_locator(MultipleLocator(step))
+    ax.grid(which='major', axis='x', linestyle='--', alpha=0.25)
+    # domain boundaries
     for b in boundaries:
-        plt.axvline(b, color="black", linestyle=":")
-
-    plt.legend()
-    plt.title("Continual Learning Metrics")
-    plt.xlabel("Epoch")
+        ax.axvline(b, color='black', linestyle=':', alpha=0.9)
+    ax.legend()
     plt.show()
 
     # -----------------------
@@ -389,6 +409,7 @@ def plot_imbalanced_metrics(result_path, epoch_indices=None):
     """
     import matplotlib.pyplot as plt
     import numpy as np
+    from matplotlib.ticker import MultipleLocator
 
     data, hist = _load_log_data(result_path)
     epoch_confusions = data.get('epoch_confusion_matrices', None)
@@ -434,17 +455,33 @@ def plot_imbalanced_metrics(result_path, epoch_indices=None):
     plt.plot(epochs, macro_f1s, label='Macro F1')
     plt.plot(epochs, macro_specificities, label='Macro Specificity')
     plt.plot(epochs, macro_sensitivities, label='Macro Sensitivity')
-    plt.legend()
-    plt.title('Imbalanced Learning Metrics (macro averages)')
-    plt.xlabel('Epoch')
+    ax = plt.gca()
+    ax.set_title('Imbalanced Learning Metrics (macro averages)')
+    ax.set_xlabel('Epoch')
+    ax.set_ylabel('Value (unitless)')
+    # horizontal marker lines
+    ax.grid(which='major', axis='y', linestyle='--', alpha=0.5)
+    # vertical epoch markers
+    if len(epochs) > 0:
+        step = max(1, int(len(epochs) / 10))
+        ax.xaxis.set_major_locator(MultipleLocator(step))
+        ax.grid(which='major', axis='x', linestyle='--', alpha=0.25)
+    ax.legend()
     plt.show()
 
     plt.figure(figsize=(8, 5))
     plt.plot(epochs, maucs, label='MAUC')
     plt.plot(epochs, g_means, label='G-Mean')
-    plt.legend()
-    plt.title('MAUC and G-Mean per epoch')
-    plt.xlabel('Epoch')
+    ax = plt.gca()
+    ax.set_title('MAUC and G-Mean per epoch')
+    ax.set_xlabel('Epoch')
+    ax.set_ylabel('Value (unitless)')
+    ax.grid(which='major', axis='y', linestyle='--', alpha=0.5)
+    if len(epochs) > 0:
+        step = max(1, int(len(epochs) / 10))
+        ax.xaxis.set_major_locator(MultipleLocator(step))
+        ax.grid(which='major', axis='x', linestyle='--', alpha=0.25)
+    ax.legend()
     plt.show()
 
 
@@ -463,6 +500,7 @@ def plot_population_statistics(config_names, results_root='results', labels=None
     import os
     import numpy as np
     import matplotlib.pyplot as plt
+    from matplotlib.ticker import MultipleLocator
     import torch
 
     if labels is None:
@@ -499,6 +537,7 @@ def plot_population_statistics(config_names, results_root='results', labels=None
         runs = config_runs.get(cn, [])
         hist_arrays = {m: [] for m in metrics}
         imbalanced_arrays = {'mauc': [], 'g_mean': [], 'macro_recall': [], 'macro_f1': []}
+        boundaries_list = []
 
         for run_path in runs:
             try:
@@ -506,11 +545,28 @@ def plot_population_statistics(config_names, results_root='results', labels=None
             except Exception:
                 continue
             hist = data.get('history', data)
+            # extract domain boundaries: prefer explicit key, else infer from history
+            run_boundaries = []
+            if isinstance(data, dict) and 'domain_boundaries' in data and data['domain_boundaries'] is not None:
+                try:
+                    run_boundaries = list(data.get('domain_boundaries') or [])
+                except Exception:
+                    run_boundaries = []
+            else:
+                if isinstance(hist, list) and len(hist) > 1 and isinstance(hist[0], dict) and 'domain' in hist[0]:
+                    run_boundaries = [i for i in range(1, len(hist)) if hist[i].get('domain') != hist[i-1].get('domain')]
+                else:
+                    run_boundaries = []
+            boundaries_list.append(run_boundaries)
+
             L = len(hist)
             for m in metrics:
                 arr = np.full(L, np.nan)
                 for i, h in enumerate(hist):
-                    arr[i] = h.get(m, np.nan)
+                    try:
+                        arr[i] = h.get(m, np.nan)
+                    except Exception:
+                        arr[i] = np.nan
                 hist_arrays[m].append(arr)
 
             # imbalanced metrics: compute per-epoch arrays (MAUC and g_mean)
@@ -530,14 +586,28 @@ def plot_population_statistics(config_names, results_root='results', labels=None
         aggregated[cn] = {
             'hist_arrays': hist_arrays,
             'imbalanced': imbalanced_arrays,
+            'boundaries': boundaries_list,
             'n_runs': len(runs),
         }
 
     colors = plt.cm.tab10.colors
 
+    # compute global domain boundaries (union across all runs/configs)
+    global_boundaries = set()
+    for cn in config_names:
+        for bl in aggregated.get(cn, {}).get('boundaries', []):
+            if bl:
+                for b in bl:
+                    try:
+                        global_boundaries.add(int(b))
+                    except Exception:
+                        pass
+    global_boundaries = sorted(global_boundaries)
+
     # Plot each requested metric across configs
     for i, (m, name) in enumerate(zip(metrics, metricsNames)):
         fig = plt.figure(figsize=(10, 6))
+        plotted = False
         for idx, cn in enumerate(config_names):
             arrs = aggregated[cn]['hist_arrays'].get(m, [])
             if len(arrs) == 0:
@@ -550,11 +620,44 @@ def plot_population_statistics(config_names, results_root='results', labels=None
             std = np.nanstd(mat, axis=0)
             x = np.arange(mean.shape[0])
             c = colors[idx % len(colors)]
+            # percent-scale accuracies
+            is_acc = 'acc' in m.lower()
+            if is_acc:
+                mean = mean * 100.0
+                std = std * 100.0
             plt.plot(x, mean, label=labels[idx], color=c)
             plt.fill_between(x, mean - std, mean + std, color=c, alpha=0.2)
+            plotted = True
+        if not plotted:
+            plt.close(fig)
+            continue
+        ax = plt.gca()
         plt.title(f"Population: {name}")
-        plt.xlabel('Epoch')
-        plt.legend()
+        ax.set_xlabel('Epoch')
+        # set y label (percent for accuracies)
+        if 'acc' in m.lower():
+            ax.set_ylabel('Accuracy (%)')
+            try:
+                ax.set_yticks(np.linspace(0, 100, 5))
+            except Exception:
+                pass
+        else:
+            ax.set_ylabel('Value (unitless)')
+        ax.legend()
+        # horizontal marker lines
+        if 'acc' in m.lower():
+            ax.grid(which='major', axis='y', linestyle='--', alpha=0.5)
+        else:
+            ax.grid(which='major', axis='y', linestyle='--', alpha=0.3)
+        # vertical epoch markers
+        if x.shape[0] > 0:
+            step = max(1, int(x.shape[0] / 10))
+            ax.xaxis.set_major_locator(MultipleLocator(step))
+            ax.grid(which='major', axis='x', linestyle='--', alpha=0.25)
+        # draw global domain boundary vertical dotted lines
+        for b in global_boundaries:
+            if 0 <= b < x.shape[0]:
+                ax.axvline(b, color='black', linestyle=':', alpha=0.7)
         # save if requested
         if save_directory_name:
             token = continual_save_names[i] if i < len(continual_save_names) else m
@@ -582,6 +685,11 @@ def plot_population_statistics(config_names, results_root='results', labels=None
         plt.title(f"Population: {imName}")
         plt.xlabel('Epoch')
         plt.legend()
+        # draw global domain boundary vertical dotted lines
+        ax = plt.gca()
+        for b in global_boundaries:
+            if 0 <= b < x.shape[0]:
+                ax.axvline(b, color='black', linestyle=':', alpha=0.7)
         # save if requested (use imbalance_save_names mapping)
         if save_directory_name:
             token = imbalance_save_names[j] if j < len(imbalance_save_names) else im
