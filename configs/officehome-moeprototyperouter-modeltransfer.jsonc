@@ -72,6 +72,7 @@
     // optional: list mapping expert indices -> domain indices for prototype init
     "prototype_init_domains": [0, 1, 2, 3],
     "prototype_init_dataset": "datasets/OfficeHomeDataset_10072016",
+    "routing_alpha": 0.3,
     "route_with_class_token": false,
     "upper_blocks": 4
   },
@@ -80,7 +81,7 @@
   // Loss and learning rate
   "loss": {
     "name": "weighted_cross_entropy", // options: "cross_entropy", "weighted_cross_entropy", "focal"
-    "lr": 0.0001,
+    "lr": 0.0003,
     // set to true to enable per-class weighting based on partition distribution
     "weighted": true,
     // upper limit applied when computing inverse-frequency weights
@@ -140,7 +141,7 @@
   // scheduling); null means never change midrun
   "router_lr_multiplier_after_epochs": null,
   "warmup_epochs":2,
-  "warmup_starting_LR": 0.0001,
+  "warmup_starting_LR": 0.0003,
 
   // --------------------------------------------------------------------
   // Baseline reference (enable to compute FWT/intransience)

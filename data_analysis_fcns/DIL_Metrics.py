@@ -448,7 +448,7 @@ def plot_imbalanced_metrics(result_path, epoch_indices=None):
     plt.show()
 
 
-def plot_population_statistics(config_names, results_root='results', labels=None, metrics=None):
+def plot_population_statistics(config_names, results_root='results', labels=None, metrics=None, save_directory_name=None):
     """
     For multiple configs (each corresponding to a subfolder or filename token under `results_root`),
     aggregate runs (multiple .pt files) per config and plot mean +/- std shaded regions for selected metrics.
@@ -469,6 +469,17 @@ def plot_population_statistics(config_names, results_root='results', labels=None
         labels = config_names
     if metrics is None:
         metrics = ['overall_acc', 'avg_inc_acc', 'plasticity', 'forgetting', 'bwt', 'fwt', 'intransience']
+
+    metricsNames = ['Overall Accuracy', 'Average Incremental Accuracy', 'Plasticity', 'Forgetting', 'Backwards Transfer', 'Forwards Transfer', 'Intransigence']
+
+    continual_save_names = ['OA', 'AIA', 'PL', 'FM', 'BWT', 'FWT', 'IT']
+    imbalance_save_names = ['MAUC', 'G-MEAN', 'MR', 'MF1']
+
+    # prepare images output directory if requested
+    images_root = None
+    if save_directory_name:
+        images_root = os.path.join('images', save_directory_name)
+        os.makedirs(images_root, exist_ok=True)
 
     # find result files for each config name
     config_runs = {cn: [] for cn in config_names}
@@ -525,45 +536,55 @@ def plot_population_statistics(config_names, results_root='results', labels=None
     colors = plt.cm.tab10.colors
 
     # Plot each requested metric across configs
-    for m in metrics:
-        plt.figure(figsize=(10, 6))
+    for i, (m, name) in enumerate(zip(metrics, metricsNames)):
+        fig = plt.figure(figsize=(10, 6))
         for idx, cn in enumerate(config_names):
             arrs = aggregated[cn]['hist_arrays'].get(m, [])
             if len(arrs) == 0:
                 continue
             maxL = max(a.shape[0] for a in arrs)
             mat = np.full((len(arrs), maxL), np.nan)
-            for i, a in enumerate(arrs):
-                mat[i, :a.shape[0]] = a
+            for j, a in enumerate(arrs):
+                mat[j, :a.shape[0]] = a
             mean = np.nanmean(mat, axis=0)
             std = np.nanstd(mat, axis=0)
             x = np.arange(mean.shape[0])
             c = colors[idx % len(colors)]
             plt.plot(x, mean, label=labels[idx], color=c)
             plt.fill_between(x, mean - std, mean + std, color=c, alpha=0.2)
-        plt.title(f"Population: {m}")
+        plt.title(f"Population: {name}")
         plt.xlabel('Epoch')
         plt.legend()
+        # save if requested
+        if save_directory_name:
+            token = continual_save_names[i] if i < len(continual_save_names) else m
+            out_path = os.path.join(images_root, f"{save_directory_name}_{token}.svg")
+            fig.savefig(out_path, format="svg", bbox_inches="tight")
         plt.show()
 
     # Plot imbalanced MAUC and G-mean across configs
-    for im in ['mauc', 'g_mean']:
-        plt.figure(figsize=(10, 6))
+    for j, (im, imName) in enumerate(zip(['mauc', 'g_mean'], ['MAUC', 'Geometric Mean'])):
+        fig = plt.figure(figsize=(10, 6))
         for idx, cn in enumerate(config_names):
             arrs = aggregated[cn]['imbalanced'].get(im, [])
             if len(arrs) == 0:
                 continue
             maxL = max(a.shape[0] for a in arrs)
             mat = np.full((len(arrs), maxL), np.nan)
-            for i, a in enumerate(arrs):
-                mat[i, :a.shape[0]] = a
+            for k, a in enumerate(arrs):
+                mat[k, :a.shape[0]] = a
             mean = np.nanmean(mat, axis=0)
             std = np.nanstd(mat, axis=0)
             x = np.arange(mean.shape[0])
             c = colors[idx % len(colors)]
             plt.plot(x, mean, label=labels[idx], color=c)
             plt.fill_between(x, mean - std, mean + std, color=c, alpha=0.2)
-        plt.title(f"Population: {im}")
+        plt.title(f"Population: {imName}")
         plt.xlabel('Epoch')
         plt.legend()
+        # save if requested (use imbalance_save_names mapping)
+        if save_directory_name:
+            token = imbalance_save_names[j] if j < len(imbalance_save_names) else im
+            out_path = os.path.join(images_root, f"{save_directory_name}_{token}.svg")
+            fig.savefig(out_path, format="svg", bbox_inches="tight")
         plt.show()

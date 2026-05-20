@@ -394,7 +394,7 @@ class SwitchMoEViT(nn.Module):
         return torch.tensor(0.0)
 
 
-def create_switch_moe(num_classes: int = 10, num_experts: int = 4, ema_alpha: float = 0.9, prototype_init_domains: Optional[List[int]] = None, routing_alpha: float = 0.4, **kwargs):
+def create_switch_moe(num_classes: int = 10, num_experts: int = 4, ema_alpha: float = 0.9, prototype_init_domains: Optional[List[int]] = None, routing_alpha: float = 0.3, **kwargs):
     """Factory returning dict with `model` key to match other factories.
 
     Parameters beyond the first three are accepted for API compatibility.

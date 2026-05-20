@@ -86,7 +86,7 @@
     // Configuration separates the number of unshared and shared experts
     // explicitly
     
-    "moe_top_k": 0, // only selects between unshared, shared are always used
+    "moe_top_k": 1, // only selects between unshared, shared are always used
     "moe_expert_lr_multiplier": 3.0,
     "route_with_cls_token": true,
     "moe_route_with_cls_token": true
