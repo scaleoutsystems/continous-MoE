@@ -685,6 +685,8 @@ def plot_population_statistics(config_names, results_root='results', labels=None
         plt.title(f"Population: {imName}")
         plt.xlabel('Epoch')
         plt.legend()
+        plt.ylabel('Value (unitless)')
+
         # draw global domain boundary vertical dotted lines
         ax = plt.gca()
         for b in global_boundaries:

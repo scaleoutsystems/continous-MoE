@@ -6,6 +6,10 @@ models/
 results/
 logs/
 
+# Generated image files
+*.svg
+*.png
+
 # Private webhook integration
 hook.txt
 

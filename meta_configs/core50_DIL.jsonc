@@ -1,7 +1,8 @@
 {
   // Example metaconfig to run the small mini-debug config once
   // Add additional configs inside the brackets, comma separated
-  "configs": ["configs/core50-vit-moeHead.jsonc", "configs/core50-moe_ensemble_LR_scale", "configs/core50-moe-many.jsonc", "configs/core50-moe.jsonc", "configs/core50-vit.jsonc", "configs/core50-convnext.jsonc"],
+  // "configs/core50-vit-moeHead.jsonc", // removed since it was pretrained
+  "configs": ["configs/core50-moe_ensemble_LR_scale", "configs/core50-moe-many.jsonc", "configs/core50-moe.jsonc", "configs/core50-vit.jsonc", "configs/core50-convnext.jsonc"],
   // Provide one seed-group (single-run). Use integers or "random".
 //   "global": [42],
   "dataset": [7, 234234, 8564, 24590, 42],

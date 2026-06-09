@@ -1,8 +1,7 @@
 {
   // Example metaconfig to run the small mini-debug config once
   // Add additional configs inside the brackets, comma separated
-  "configs": ["configs/balancedcifar10testing-convnext.jsonc", "configs/balancedcifar10testing-moe.jsonc", "configs/balancedcifar10testing-vit.jsonc",
-              "configs/balancedcifar10testing-convnext-noSch.jsonc", "configs/balancedcifar10testing-moe-noSch.jsonc", "configs/balancedcifar10testing-vit-noSch.jsonc"],
+  "configs": ["configs/balancedcifar10testing-convnext-noSch.jsonc", "configs/balancedcifar10testing-moe-noSch.jsonc", "configs/balancedcifar10testing-vit-noSch.jsonc"],
   // Provide one seed-group (single-run). Use integers or "random".
 //   "global": [42],
   "dataset": [7, 234234, 8564, 24590, 42],

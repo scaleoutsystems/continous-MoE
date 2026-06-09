@@ -1,7 +1,7 @@
 {
   // Example metaconfig to run the small mini-debug config once
   // Add additional configs inside the brackets, comma separated
-  "configs": ["configs/officehome-moe-EMArouter-m-temp_anneal-long.jsonc", "configs/officehome-moe-mini-long.jsonc", "configs/officehome-vit-mini-long.jsonc"],
+  "configs": ["configs/officehome-moe-mini-long.jsonc", "configs/officehome-vit-mini-long.jsonc"],
   // Provide one seed-group (single-run). Use integers or "random".
 //   "global": [42],
   "dataset": [7, 234234, 8564, 24590, 42],

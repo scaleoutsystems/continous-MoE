@@ -1,7 +1,6 @@
 {
-  // Example metaconfig to run the small mini-debug config once
   // Add additional configs inside the brackets, comma separated
-  "configs": ["configs/tinyvitmoe_cifar10_easyDirichlet.jsonc", "configs/vit_moe_cifar10_easyDirichlet.jsonc", "configs/convnext_cifar10_easyDirichlet.jsonc"],
+  "configs": ["configs/officehome-moeprototyperouter-modeltransfer", "configs/officehome-moe-EMArouter-modeltransfer.jsonc", "configs/officehome-moe-modeltransfer.jsonc", "configs/officehome-vit-modeltransfer.jsonc"],
   // Provide one seed-group (single-run). Use integers or "random".
 //   "global": [42],
   "dataset": [7, 234234, 8564, 24590, 42],
